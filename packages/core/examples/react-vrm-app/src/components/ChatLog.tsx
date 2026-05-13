@@ -24,6 +24,11 @@ export function ChatLog({ messages, partialResponse }: ChatLogProps) {
             {msg.role === 'user' ? 'You' : 'AI'}
           </div>
           <div className="chat-content">{msg.content}</div>
+          {msg.imageDataUrl && (
+            <div className="chat-message-image">
+              <img src={msg.imageDataUrl} alt="" />
+            </div>
+          )}
         </div>
       ))}
       {partialResponse && (

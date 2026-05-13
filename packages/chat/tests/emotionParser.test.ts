@@ -71,6 +71,7 @@ describe('EmotionParser', () => {
       expect(EmotionParser.isValidEmotion('angry')).toBe(true);
       expect(EmotionParser.isValidEmotion('surprised')).toBe(true);
       expect(EmotionParser.isValidEmotion('neutral')).toBe(true);
+      expect(EmotionParser.isValidEmotion('relaxed')).toBe(true);
     });
 
     it('should return false for invalid emotions', () => {

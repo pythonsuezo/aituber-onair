@@ -7,7 +7,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const workspaceThreeRoot = path.resolve(__dirname, '../../../../node_modules/three');
 
 // https://vite.dev/config/
+// Relative base so `file://` loads from the Electron production bundle work.
 export default defineConfig({
+  base: './',
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+  },
   resolve: {
     alias: [
       {

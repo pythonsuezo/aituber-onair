@@ -1,5 +1,5 @@
 // Define emotion types and list locally to avoid dependency on voice package
-const emotions = ['happy', 'sad', 'angry', 'surprised', 'neutral'] as const;
+const emotions = ['happy', 'sad', 'angry', 'surprised', 'neutral', 'relaxed'] as const;
 type EmotionType = (typeof emotions)[number];
 
 /**

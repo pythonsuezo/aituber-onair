@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AITuberOnAirCore, AITuberOnAirCoreEvent } from '@aituber-onair/core';
+import {
+  AITuberOnAirCore,
+  AITuberOnAirCoreEvent,
+  textToScreenplay,
+} from '@aituber-onair/core';
 import type {
   VoiceServiceOptions,
   ElevenLabsApplyTextNormalization,
@@ -10,11 +14,52 @@ import type {
 } from '@aituber-onair/core';
 import type { ChatMessage } from '../types/chat';
 import type { AppSettings, ChatProviderOption } from '../types/settings';
+import { DEFAULT_AITUBER_SYSTEM_PROMPT } from '../constants/defaultAituberSystemPrompt';
 
 interface UseAituberCoreOptions {
   onAudioPlay: (arrayBuffer: ArrayBuffer) => Promise<void>;
   settings: AppSettings;
   getApiKeyForProvider: (provider: ChatProviderOption) => string;
+}
+
+const DEFAULT_SYSTEM_PROMPT = DEFAULT_AITUBER_SYSTEM_PROMPT;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function extractEmotionFromSpeechStart(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const o = data as Record<string, unknown>;
+  const screenplay = o.screenplay;
+  if (screenplay && typeof screenplay === 'object') {
+    const em = (screenplay as { emotion?: string }).emotion;
+    if (typeof em === 'string' && em.trim()) {
+      return em.trim().toLowerCase();
+    }
+    return undefined;
+  }
+  const direct = (o as { emotion?: string }).emotion;
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim().toLowerCase();
+  }
+  return undefined;
+}
+
+function extractEmotionFromScreenplayPayload(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const screenplay = (data as { screenplay?: { emotion?: string } }).screenplay;
+  const em = screenplay?.emotion;
+  if (typeof em === 'string' && em.trim()) {
+    return em.trim().toLowerCase();
+  }
+  return undefined;
 }
 
 function getTtsApiKey(
@@ -186,9 +231,22 @@ export function useAituberCore({
 }: UseAituberCoreOptions) {
   const coreRef = useRef<AITuberOnAirCore | null>(null);
   const messageIdSequenceRef = useRef(0);
+  /** Current processing cycle ID to avoid losing final bubbles. */
+  const processingCycleIdRef = useRef(0);
+  /** Cycle ID that already emitted assistant final text. */
+  const assistantFinalCycleIdRef = useRef(0);
+  /** Last partial text received in current cycle. */
+  const latestPartialRef = useRef('');
+  /** 同時送信: 次のビジョン1回分のチャット本文（バブル表示用） */
+  const pendingVisionUserTextRef = useRef<string | null>(null);
+  /** 連続のビジョン送信を直列化（二重 postMessage 等の競合防止） */
+  const visionSendChainRef = useRef<Promise<void>>(Promise.resolve());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [partialResponse, setPartialResponse] = useState('');
+  const [assistantEmotion, setAssistantEmotion] = useState<string | undefined>(
+    undefined,
+  );
 
   // Keep the latest onAudioPlay callback in a ref
   const onAudioPlayRef = useRef(onAudioPlay);
@@ -205,6 +263,8 @@ export function useAituberCore({
     settings.llm.provider === 'openai-compatible'
       ? settings.llm.model.trim() || 'local-model'
       : settings.llm.model;
+  const effectiveSystemPrompt =
+    settings.llm.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
   const createMessageId = useCallback(() => {
     messageIdSequenceRef.current += 1;
     return `${Date.now()}-${messageIdSequenceRef.current}`;
@@ -236,8 +296,7 @@ export function useAituberCore({
         ? { endpoint: openAICompatibleEndpoint }
         : undefined,
       chatOptions: {
-        systemPrompt:
-          'あなたはフレンドリーなAITuberです。親しみやすい口調で応答してください。',
+        systemPrompt: effectiveSystemPrompt,
       },
       voiceOptions: buildVoiceOptions(
         settings.tts,
@@ -251,11 +310,31 @@ export function useAituberCore({
 
     // Subscribe to core events
     core.on(AITuberOnAirCoreEvent.PROCESSING_START, () => {
+      processingCycleIdRef.current += 1;
+      latestPartialRef.current = '';
       setIsProcessing(true);
       setPartialResponse('');
+      setAssistantEmotion(undefined);
     });
 
     core.on(AITuberOnAirCoreEvent.PROCESSING_END, () => {
+      const cycleId = processingCycleIdRef.current;
+      const partial = latestPartialRef.current.trim();
+      if (
+        partial &&
+        assistantFinalCycleIdRef.current !== cycleId
+      ) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: createMessageId(),
+            role: 'assistant',
+            content: partial,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+      latestPartialRef.current = '';
       setIsProcessing(false);
       setPartialResponse('');
     });
@@ -267,7 +346,12 @@ export function useAituberCore({
           : ((data as { message?: string; rawText?: string })?.message ??
             (data as { rawText?: string })?.rawText ??
             String(data));
+      latestPartialRef.current = text;
       setPartialResponse(text);
+      const partialEmotion = textToScreenplay(text).emotion;
+      if (partialEmotion) {
+        setAssistantEmotion(partialEmotion.toLowerCase());
+      }
     });
 
     core.on(AITuberOnAirCoreEvent.ASSISTANT_RESPONSE, (data: unknown) => {
@@ -294,7 +378,31 @@ export function useAituberCore({
           timestamp: Date.now(),
         },
       ]);
+      assistantFinalCycleIdRef.current = processingCycleIdRef.current;
+      latestPartialRef.current = '';
       setPartialResponse('');
+      const fromScreenplay = extractEmotionFromScreenplayPayload(data);
+      if (fromScreenplay) {
+        setAssistantEmotion(fromScreenplay);
+      }
+    });
+
+    core.on(AITuberOnAirCoreEvent.SPEECH_START, (payload: unknown) => {
+      const em = extractEmotionFromSpeechStart(payload);
+      if (em) {
+        setAssistantEmotion(em);
+      }
+    });
+
+    core.on(AITuberOnAirCoreEvent.SPEECH_END, () => {
+      setAssistantEmotion(undefined);
+    });
+
+    core.on(AITuberOnAirCoreEvent.ASSISTANT_RESPONSE_TRUNCATED, (data: unknown) => {
+      const fromScreenplay = extractEmotionFromScreenplayPayload(data);
+      if (fromScreenplay) {
+        setAssistantEmotion(fromScreenplay);
+      }
     });
 
     core.on(AITuberOnAirCoreEvent.ERROR, (error: unknown) => {
@@ -313,6 +421,7 @@ export function useAituberCore({
     settings.llm.provider,
     settings.llm.model,
     settings.llm.endpoint,
+    settings.llm.systemPrompt,
     llmApiKey,
     isApiKeyOptionalProvider,
     createMessageId,
@@ -351,6 +460,14 @@ export function useAituberCore({
     ttsApiKey,
   ]);
 
+  const setPendingVisionPairWithUserText = useCallback((text: string) => {
+    pendingVisionUserTextRef.current = text;
+  }, []);
+
+  const cancelPendingVisionUserText = useCallback(() => {
+    pendingVisionUserTextRef.current = null;
+  }, []);
+
   const processChat = useCallback(
     async (text: string) => {
       if (!coreRef.current || !text.trim()) return;
@@ -376,10 +493,85 @@ export function useAituberCore({
     [createMessageId],
   );
 
+  const sendVisionFrame = useCallback(
+    async (imageDataUrl: string, visionPrompt: string) => {
+      const task = async () => {
+        if (!coreRef.current || !imageDataUrl) return;
+
+        const pairedForBubble = pendingVisionUserTextRef.current;
+        pendingVisionUserTextRef.current = null;
+
+        const visionInstruction =
+          visionPrompt.trim() ||
+          'この画像はOBSのプレビューまたはキャプチャボードの映像です。画面上の内容を日本語で簡潔に説明してください。配信に役立つ気づきがあれば述べてください。';
+
+        const bubbleText =
+          pairedForBubble?.trim() ||
+          (visionPrompt.trim() || '（OBS / キャプチャ画面を送信）');
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: createMessageId(),
+            role: 'user',
+            content: bubbleText,
+            timestamp: Date.now(),
+            imageDataUrl,
+          },
+        ]);
+
+        const maxWaitMs = 180_000;
+        const deadline = Date.now() + maxWaitMs;
+        while (coreRef.current?.isChatBusy()) {
+          if (Date.now() > deadline) {
+            console.warn(
+              '[vision] timed out waiting for previous chat to finish; attempting vision anyway',
+            );
+            break;
+          }
+          await delay(50);
+        }
+
+        const core = coreRef.current;
+        if (!core) {
+          return;
+        }
+
+        try {
+          const ok = await core.processVisionChat(
+            imageDataUrl,
+            visionInstruction,
+          );
+          if (!ok) {
+            console.warn(
+              '[vision] processVisionChat was skipped (core still reported busy)',
+            );
+          }
+        } catch (err) {
+          console.error('processVisionChat error:', err);
+          setIsProcessing(false);
+        }
+      };
+
+      visionSendChainRef.current = visionSendChainRef.current
+        .then(task)
+        .catch((err) => {
+          console.error('sendVisionFrame chain:', err);
+          setIsProcessing(false);
+        });
+      await visionSendChainRef.current;
+    },
+    [createMessageId],
+  );
+
   return {
     messages,
     isProcessing,
     partialResponse,
+    assistantEmotion,
     processChat,
+    sendVisionFrame,
+    setPendingVisionPairWithUserText,
+    cancelPendingVisionUserText,
   };
 }

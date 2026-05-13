@@ -246,7 +246,6 @@ export class ChatProcessor extends EventEmitter {
             type: 'image_url',
             image_url: {
               url: imageDataUrl,
-              detail: 'low', // For token saving
             },
           },
         ],
@@ -257,10 +256,10 @@ export class ChatProcessor extends EventEmitter {
       const maxTokens = this.getExplicitMaxTokensForVision();
       await this.runToolLoop<Message | MessageWithVision>(
         [...baseMessages, visionMessage],
-        (msgs, stream, cb) =>
+        (msgs, _stream, cb) =>
           this.chatService.visionChatOnce(
             msgs as MessageWithVision[],
-            stream,
+            false,
             cb,
             maxTokens,
           ),

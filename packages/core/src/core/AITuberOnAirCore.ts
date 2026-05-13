@@ -399,6 +399,14 @@ export class AITuberOnAirCore extends EventEmitter {
     );
   }
 
+  /**
+   * True while a chat or vision request is running inside the internal
+   * processing guard (text chat or vision API call in progress).
+   */
+  isChatBusy(): boolean {
+    return this.isProcessing;
+  }
+
   private async withProcessing(
     startPayload: Record<string, unknown>,
     action: () => Promise<void>,

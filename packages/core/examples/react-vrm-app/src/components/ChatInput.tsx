@@ -17,18 +17,22 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
+    // Clear first so UI updates even if onSend throws (e.g. vision BroadcastChannel).
     setText('');
-    if (speech.listening) {
-      speech.stop();
+    try {
+      onSend(trimmed);
+    } finally {
+      if (speech.listening) {
+        speech.stop();
+      }
     }
   }, [text, disabled, onSend, speech]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !composingRef.current) {
-      e.preventDefault();
-      handleSend();
-    }
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (e.nativeEvent.isComposing || composingRef.current) return;
+    e.preventDefault();
+    handleSend();
   };
 
   const toggleMic = () => {

@@ -50,7 +50,7 @@
   },
   "scripts": {
     "build": "npm run build:clean && npm run build:cjs && npm run build:esm && npm run build:types",
-    "build:clean": "rm -rf dist",
+    "build:clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true });\"",
     "build:cjs": "tsc -p tsconfig.cjs.json",
     "build:esm": "tsc -p tsconfig.esm.json",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationDir dist/types",

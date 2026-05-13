@@ -284,6 +284,10 @@ export class OpenAIChatService implements ChatService {
   ): Promise<Response> {
     const body = this.buildRequestBody(messages, model, stream, maxTokens);
     const headers: Record<string, string> = {};
+    // Local OpenAI-compatible servers (LM Studio / llama.cpp / vLLM) can take
+    // much longer than 30s on vision prompt processing, especially before first token.
+    // Keep default timeout for hosted providers, but relax for openai-compatible.
+    const timeoutMs = this.provider === 'openai-compatible' ? 180_000 : 30_000;
 
     const shouldSendAuthorization =
       this.provider !== 'openai-compatible' || this.apiKey.trim() !== '';
@@ -291,7 +295,9 @@ export class OpenAIChatService implements ChatService {
       headers.Authorization = `Bearer ${this.apiKey}`;
     }
 
-    const res = await ChatServiceHttpClient.post(this.endpoint, body, headers);
+    const res = await ChatServiceHttpClient.post(this.endpoint, body, headers, {
+      timeout: timeoutMs,
+    });
 
     return res;
   }

@@ -16,7 +16,7 @@
     "fmt": "biome format . --write",
     "fmt:check": "biome format .",
     "lint": "biome lint .",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true });\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

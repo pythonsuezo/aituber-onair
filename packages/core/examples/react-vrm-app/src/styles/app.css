@@ -4,15 +4,23 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #1a1a2e;
   color: #e0e0e0;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -21,6 +29,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ── Settings ── */
@@ -55,6 +64,7 @@ body {
 .settings-dialog {
   width: min(480px, 90vw);
   max-height: 80vh;
+  max-height: 80dvh;
   background: #16213e;
   border: 1px solid #0f3460;
   border-radius: 12px;
@@ -151,7 +161,8 @@ body {
 .settings-field select,
 .settings-field input[type="password"],
 .settings-field input[type="text"],
-.settings-field input[type="number"] {
+.settings-field input[type="number"],
+.settings-field textarea {
   width: 100%;
   padding: 6px 10px;
   background: #1a1a2e;
@@ -163,10 +174,17 @@ body {
   font-family: inherit;
 }
 
+.settings-field textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.4;
+}
+
 .settings-field select:focus,
 .settings-field input[type="password"]:focus,
 .settings-field input[type="text"]:focus,
-.settings-field input[type="number"]:focus {
+.settings-field input[type="number"]:focus,
+.settings-field textarea:focus {
   border-color: #e94560;
 }
 
@@ -246,9 +264,55 @@ body {
 }
 
 .settings-field select:disabled,
-.settings-field input:disabled {
+.settings-field input:disabled,
+.settings-field textarea:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.settings-system-preset-save {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+@media (min-width: 480px) {
+  .settings-system-preset-save {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .settings-system-preset-save .settings-action-button {
+    width: auto;
+    flex-shrink: 0;
+  }
+}
+
+.settings-system-preset-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-system-preset-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+}
+
+.settings-system-preset-name {
+  flex: 1 1 120px;
+  min-width: 0;
+  color: #c8d4e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-action-button {
@@ -348,8 +412,72 @@ body {
   font-size: 0.75rem;
 }
 
-.avatar-guide {
-  bottom: 12px;
+.vrm-view-toolbar {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.vrm-view-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vrm-toolbar-label {
+  font-size: 0.72rem;
+  color: #aab8c8;
+}
+
+.vrm-bg-switch {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.vrm-bg-switch button,
+.vrm-reset-bundled {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: rgba(22, 33, 62, 0.92);
+  color: #e0e0e0;
+  cursor: pointer;
+}
+
+.vrm-bg-switch button:hover,
+.vrm-reset-bundled:hover {
+  background: #0f3460;
+}
+
+.vrm-bg-switch button.is-active {
+  background: #e94560;
+  border-color: #e94560;
+  color: #fff;
+}
+
+.settings-field .vrm-bg-switch--settings {
+  margin-top: 6px;
+}
+
+.vrm-file-pick {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: rgba(22, 33, 62, 0.92);
+  color: #e0e0e0;
+  cursor: pointer;
+}
+
+.vrm-file-pick input {
+  display: none;
 }
 
 /* ── Chat Panel ── */
@@ -362,15 +490,103 @@ body {
   position: relative;
 }
 
+.chat-avatar-region {
+  position: relative;
+  flex: 0 0 52%;
+  min-height: 220px;
+  border-bottom: 0;
+  overflow: hidden;
+}
+
+.chat-splitter {
+  position: relative;
+  height: 16px;
+  flex: 0 0 16px;
+  cursor: row-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+.chat-splitter::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 64px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(170, 184, 200, 0.65);
+}
+
+.chat-conversation-region {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.chat-avatar-region .avatar-background {
+  padding-bottom: 0;
+}
+
+.chat-conversation-region .chat-log {
+  padding-top: 0;
+}
+
+/* チャットログ(.chat-log z-index:6)・バブル(7)より手前に（PC含む全レイアウト） */
 .chat-settings-button {
   position: absolute;
   top: 12px;
   right: 16px;
-  z-index: 4;
+  z-index: 20;
   background: rgba(22, 33, 62, 0.9);
 }
 
+.chat-vision-button {
+  position: absolute;
+  top: 12px;
+  right: 58px;
+  z-index: 20;
+  background: rgba(22, 33, 62, 0.9);
+}
+
+.inline-vision-overlay {
+  position: fixed;
+  right: 12px;
+  bottom: 88px;
+  width: min(300px, calc(100vw - 24px));
+  z-index: 20;
+  border-radius: 14px;
+  overflow: visible;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
+  will-change: transform;
+  border: 1px solid rgba(15, 52, 96, 0.85);
+  background: rgba(15, 24, 42, 0.9);
+  backdrop-filter: blur(3px);
+}
+
+@media (max-width: 900px) {
+  .inline-vision-overlay {
+    width: min(270px, calc(100vw - 16px));
+  }
+}
+
 /* ── Chat Log ── */
+
+.chat-panel--no-avatar .chat-log {
+  padding-top: 52px;
+}
+
+/* ── Stage-only window (VRM + remote lip-sync) ── */
+
+.app--stage-only {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
 
 .chat-log {
   flex: 1;
@@ -380,10 +596,11 @@ body {
   flex-direction: column;
   gap: 12px;
   position: relative;
-  z-index: 1;
+  z-index: 6;
   padding-top: 60px;
   padding-bottom: 20px;
 }
+
 
 .chat-empty {
   display: flex;
@@ -402,6 +619,8 @@ body {
   font-size: 0.9rem;
   white-space: pre-wrap;
   word-break: break-word;
+  position: relative;
+  z-index: 7;
 }
 
 .chat-message-user {
@@ -434,6 +653,354 @@ body {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
+}
+
+.chat-message-image {
+  margin-top: 8px;
+}
+
+.chat-message-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  border-radius: 8px;
+  object-fit: contain;
+  border: 1px solid rgba(15, 52, 96, 0.85);
+}
+
+/* ── Capture vision (OBS / capture → AI) ── */
+
+.capture-vision-bar {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  background: #111a2e;
+  border-top: 1px solid #0f3460;
+  border-bottom: 1px solid #0f3460;
+  z-index: 3;
+  position: relative;
+}
+
+.capture-vision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.capture-vision-title {
+  font-size: 0.8rem;
+  color: #e94560;
+  font-weight: 600;
+}
+
+.capture-vision-ghost {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid #0f3460;
+  background: transparent;
+  color: #aab8c8;
+  cursor: pointer;
+}
+
+.capture-vision-preview-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #0f3460;
+  margin-bottom: 8px;
+}
+
+.capture-vision-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.capture-vision-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 0.78rem;
+  color: #667788;
+  padding: 12px;
+}
+
+.capture-vision-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.capture-vision-row--device .capture-vision-select {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
+.capture-vision-primary,
+.capture-vision-secondary,
+.capture-vision-send {
+  font-size: 0.78rem;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  cursor: pointer;
+}
+
+.capture-vision-primary {
+  background: #0f3460;
+  color: #e0e0e0;
+}
+
+.capture-vision-secondary {
+  background: transparent;
+  color: #aab8c8;
+}
+
+.capture-vision-send {
+  background: #e94560;
+  border-color: #e94560;
+  color: #fff;
+  font-weight: 600;
+}
+
+.capture-vision-primary:disabled,
+.capture-vision-secondary:disabled,
+.capture-vision-send:disabled,
+.capture-vision-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.capture-vision-select {
+  flex: 1;
+  min-width: 120px;
+  font-size: 0.78rem;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: #16213e;
+  color: #e0e0e0;
+}
+
+.capture-vision-label {
+  display: block;
+  font-size: 0.72rem;
+  color: #8899aa;
+  margin-bottom: 4px;
+}
+
+.capture-vision-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 8px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: #16213e;
+  color: #e0e0e0;
+  resize: vertical;
+}
+
+.capture-vision-error {
+  font-size: 0.75rem;
+  color: #ff8e8e;
+  margin-top: 4px;
+}
+
+.capture-vision-hint {
+  font-size: 0.68rem;
+  color: #667788;
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+/* ── Vision window ── */
+
+.vision-window {
+  min-height: 100vh;
+  padding: 12px;
+  background: #0f1320;
+  color: #e0e0e0;
+}
+
+.vision-window--simple {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.vision-window-toolbar {
+  flex-shrink: 0;
+  background: rgba(22, 33, 62, 0.92);
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.vision-toolbar-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.vision-mode-btn {
+  flex: 1;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #0f3460;
+  background: #16213e;
+  color: #aab8c8;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.vision-mode-btn:hover {
+  color: #e0e0e0;
+  border-color: #1a5080;
+}
+
+.vision-mode-btn--on {
+  background: #0f3460;
+  border-color: #e94560;
+  color: #fff;
+}
+
+.vision-toolbar-interval {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 0;
+  font-size: 0.8rem;
+  color: #aab8c8;
+}
+
+.vision-toolbar-interval-label {
+  font-variant-numeric: tabular-nums;
+}
+
+.vision-toolbar-interval input[type='range'] {
+  width: 100%;
+}
+
+.vision-toolbar-hint {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: #667788;
+  padding-left: 2px;
+}
+
+.capture-vision-bar--minimal {
+  flex: 1;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 52, 96, 0.55);
+  background: linear-gradient(180deg, rgba(17, 26, 46, 0.82), rgba(12, 19, 34, 0.82));
+  overflow: visible;
+  padding: 8px 8px 6px;
+}
+
+.capture-vision-bar--minimal .capture-vision-preview-wrap {
+  flex: 0 0 auto;
+  width: min(100%, 170px);
+  min-height: 180px;
+  max-height: min(40dvh, 320px);
+  aspect-ratio: 9 / 16;
+  align-self: center;
+  margin-bottom: 6px;
+  border-radius: 10px;
+}
+
+.capture-vision-bar--minimal .capture-vision-row {
+  margin-bottom: 6px;
+  gap: 6px;
+}
+
+.capture-vision-bar--minimal .capture-vision-minimal-controls {
+  display: grid;
+  gap: 4px;
+}
+
+.capture-vision-bar--minimal .capture-vision-row--actions > button {
+  flex: 1;
+}
+
+.capture-vision-bar--minimal .capture-vision-row--slider {
+  display: grid;
+  gap: 4px;
+}
+
+.capture-vision-label-inline {
+  font-size: 0.72rem;
+  color: #cfd8e5;
+  letter-spacing: 0.01em;
+}
+
+.capture-vision-slider {
+  width: 100%;
+}
+
+.capture-vision-secondary.is-active {
+  border-color: #4e9bff;
+  box-shadow: inset 0 0 0 1px rgba(78, 155, 255, 0.6);
+  background: rgba(34, 73, 130, 0.55);
+}
+
+.capture-vision-bar--minimal .capture-vision-send {
+  width: 100%;
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.capture-vision-bar--minimal .capture-vision-select,
+.capture-vision-bar--minimal .capture-vision-primary,
+.capture-vision-bar--minimal .capture-vision-secondary,
+.capture-vision-bar--minimal .capture-vision-ghost {
+  font-size: 0.74rem;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.vision-window-settings {
+  background: rgba(22, 33, 62, 0.92);
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.vision-setting {
+  display: grid;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #c8d4e0;
+}
+
+.vision-setting input[type='range'] {
+  width: 100%;
 }
 
 /* ── Chat Input ── */
@@ -537,6 +1104,24 @@ body {
 /* ── Responsive ── */
 
 @media (max-width: 640px) {
+  .chat-avatar-region {
+    flex-basis: 44%;
+    min-height: 180px;
+  }
+
+  .app {
+    height: 100dvh;
+  }
+
+  .settings-dialog {
+    width: min(96vw, 520px);
+    max-height: 92dvh;
+  }
+
+  .settings-panel {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
   .avatar-background {
     padding-bottom: 86px;
   }

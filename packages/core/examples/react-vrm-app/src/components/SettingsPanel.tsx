@@ -1,8 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StreamSettings } from './StreamSettings';
 import { useGeminiNanoStatus } from '../hooks/useGeminiNanoStatus';
-import type { ChatProviderOption, TTSEngineOption } from '../types/settings';
+import {
+  type ChatProviderOption,
+  type TTSEngineOption,
+  type VrmTuneEmotionId,
+  VRM_TUNE_EMOTION_IDS,
+} from '../types/settings';
 import type { useSettings } from '../hooks/useSettings';
+import {
+  clampChangeThreshold,
+  clampCaptureMaxHeight,
+  clampCaptureMaxWidth,
+  clampJpegQuality,
+  clampPreviewMaxHeightPx,
+  clampVisionIntervalSec,
+  loadVisionSettings,
+  saveVisionSettings,
+  type VisionSettingsV1,
+} from '../visionSettings';
+import {
+  buildAppBackupFileV1,
+  downloadAppBackupJson,
+  restoreAppBackupFromJson,
+  restoreAppBackupFromObject,
+} from '../utils/appBackup';
+import {
+  deleteRestorePoint,
+  listRestorePoints,
+  saveRestorePoint,
+  type RestorePointRecord,
+} from '../utils/restorePointsStorage';
+import { clearStoredVrm, saveVrmBuffer } from '../utils/vrmBlobStorage';
+import { publishVrmControl, publishVrmEmotionPreview } from '../windowMode';
 
 type SettingsHook = ReturnType<typeof useSettings>;
 
@@ -102,6 +132,34 @@ const ELEVENLABS_OUTPUT_FORMATS = [
   'ulaw_8000',
 ] as const;
 
+const VRM_EMOTION_TUNING_LABELS: Record<VrmTuneEmotionId, string> = {
+  neutral: 'ニュートラル [neutral]',
+  happy: '喜び [happy]',
+  angry: '怒り [angry]',
+  sad: '悲しみ [sad]',
+  relaxed: 'リラックス [relaxed]',
+  surprised: '驚き [surprised]',
+};
+
+const VRM_EMOTION_FACE_HINTS: Record<VrmTuneEmotionId, string> = {
+  neutral:
+    '喜び・怒りなどの感情モーフを抑えたベースの顔（VRM のプリセット「neutral」相当）',
+  happy: '笑顔・口角・目元が明るくなる系のモーフ',
+  angry: '眉寄り・口元が強くなる怒り系モーフ',
+  sad: '眉の外側が下がりやすい、しおれた印象のモーフ',
+  relaxed: '口角が緩み、落ち着いた印象のモーフ',
+  surprised: '眉上がり・目開き・口が開きやすいびっくり系モーフ',
+};
+
+function dispatchVrmEmotionPreview(
+  emotion: VrmTuneEmotionId | null,
+  durationMs = 15_000,
+) {
+  publishVrmEmotionPreview(
+    emotion === null ? { emotion: null } : { emotion, durationMs },
+  );
+}
+
 const VOICEPEAK_SPEAKERS = [
   { id: 'f1', name: '日本人女性 1' },
   { id: 'f2', name: '日本人女性 2' },
@@ -146,15 +204,20 @@ interface ElevenLabsVoice {
   category?: string;
 }
 
-type SectionKey = 'llm' | 'tts' | 'visual' | 'stream';
+type SectionKey = 'vision' | 'llm' | 'tts' | 'visual' | 'stream';
 
 export function SettingsPanel({
   settings,
+  applySettingsFromBackup,
   availableModels,
   updateLLMProvider,
   updateLLMModel,
   updateLLMApiKey,
   updateLLMEndpoint,
+  updateSystemPrompt,
+  addSystemPromptPreset,
+  applySystemPromptPreset,
+  removeSystemPromptPreset,
   refreshOpenRouterDynamicFreeModels,
   isRefreshingOpenRouterFreeModels,
   openRouterRefreshError,
@@ -198,6 +261,18 @@ export function SettingsPanel({
   updateTwitchChannel,
   updateTwitchEnabled,
   updateTwitchCommentIntervalMs,
+  updateJikkyoTcpEnabled,
+  updateJikkyoListenPort,
+  updateJikkyoBouyomiPort,
+  updateJikkyoForwardToBouyomi,
+  updateJikkyoSendToAi,
+  updateJikkyoAiHeaderEnabled,
+  updateJikkyoAiHeaderText,
+  updateVrmChromaBg,
+  updateVrmLighting,
+  updateVrmExpressionBlend,
+  updateVrmLegacyExpression,
+  updateVrmEmotionTune,
   getApiKeyForProvider,
   isProcessing,
   backgroundImageUrl,
@@ -205,6 +280,7 @@ export function SettingsPanel({
   onBackgroundImageChange,
 }: SettingsPanelProps) {
   const disabled = isProcessing;
+  const [systemPromptPresetName, setSystemPromptPresetName] = useState('');
   const openRouterApiKey = getApiKeyForProvider('openrouter').trim();
   const openRouterDynamicFreeModels =
     settings.llm.openRouterDynamicFreeModels?.models || [];
@@ -227,18 +303,63 @@ export function SettingsPanel({
   const [isFetchingElevenLabsVoices, setIsFetchingElevenLabsVoices] =
     useState(false);
   const speakerRef = useRef(settings.tts.speaker);
+  const backupRestoreInputRef = useRef<HTMLInputElement | null>(null);
+  const [backupRestoreHint, setBackupRestoreHint] = useState<string | null>(
+    null,
+  );
+  const [backupRestoreError, setBackupRestoreError] = useState<string | null>(
+    null,
+  );
+  const [restorePointLabel, setRestorePointLabel] = useState('作業前');
+  const [restorePointsList, setRestorePointsList] = useState<
+    RestorePointRecord[]
+  >([]);
   const [expandedSections, setExpandedSections] = useState<
     Record<SectionKey, boolean>
   >({
+    vision: true,
     llm: true,
     tts: true,
     visual: true,
     stream: true,
   });
 
+  const [visionSettings, setVisionSettings] = useState<VisionSettingsV1>(() =>
+    loadVisionSettings(),
+  );
+
+  const updateVisionSettings = (next: VisionSettingsV1) => {
+    setVisionSettings(next);
+    saveVisionSettings(next);
+  };
+
   useEffect(() => {
     speakerRef.current = settings.tts.speaker;
   }, [settings.tts.speaker]);
+
+  const refreshRestorePointsList = useCallback(async () => {
+    try {
+      setRestorePointsList(await listRestorePoints());
+    } catch {
+      setRestorePointsList([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!expandedSections.visual) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const rows = await listRestorePoints();
+      if (!cancelled) {
+        setRestorePointsList(rows);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedSections.visual]);
 
   const selectedAivisCloudPresetId = useMemo(() => {
     const matched = AIVIS_CLOUD_PRESETS.find(
@@ -474,6 +595,222 @@ export function SettingsPanel({
 
   return (
     <div className="settings-panel">
+      {/* Vision Section */}
+      <div className="settings-section">
+        <button
+          type="button"
+          className="settings-section-toggle"
+          onClick={() => toggleSection('vision')}
+          aria-expanded={expandedSections.vision}
+        >
+          <h3>Vision</h3>
+          <span
+            className={`settings-section-chevron${
+              expandedSections.vision ? ' is-open' : ''
+            }`}
+          >
+            ⌄
+          </span>
+        </button>
+
+        {expandedSections.vision && (
+          <>
+            <div className="settings-field">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={visionSettings.enabled}
+                  onChange={(e) =>
+                    updateVisionSettings({
+                      ...visionSettings,
+                      enabled: e.target.checked,
+                    })
+                  }
+                  disabled={disabled}
+                />
+                定期的にビジョンを送る
+              </label>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-interval">
+                送信間隔（秒）: {clampVisionIntervalSec(visionSettings.intervalSec)}
+              </label>
+              <input
+                id="vision-interval"
+                type="range"
+                min={5}
+                max={180}
+                value={clampVisionIntervalSec(visionSettings.intervalSec)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    intervalSec: clampVisionIntervalSec(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={visionSettings.skipIfUnchanged}
+                  onChange={(e) =>
+                    updateVisionSettings({
+                      ...visionSettings,
+                      skipIfUnchanged: e.target.checked,
+                    })
+                  }
+                  disabled={disabled}
+                />
+                映像が変わらなければ送らない
+              </label>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-change-threshold">
+                変化しきい値（簡易）: {clampChangeThreshold(visionSettings.changeThreshold).toFixed(3)}
+              </label>
+              <input
+                id="vision-change-threshold"
+                type="range"
+                min={0}
+                max={0.2}
+                step={0.005}
+                value={clampChangeThreshold(visionSettings.changeThreshold)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    changeThreshold: clampChangeThreshold(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-capture-w">
+                AIへ送る画像の最大幅: {clampCaptureMaxWidth(visionSettings.captureMaxWidth)} px
+              </label>
+              <input
+                id="vision-capture-w"
+                type="range"
+                min={320}
+                max={1920}
+                step={16}
+                value={clampCaptureMaxWidth(visionSettings.captureMaxWidth)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    captureMaxWidth: clampCaptureMaxWidth(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-capture-h">
+                AIへ送る画像の最大高さ: {clampCaptureMaxHeight(visionSettings.captureMaxHeight)} px
+              </label>
+              <input
+                id="vision-capture-h"
+                type="range"
+                min={180}
+                max={1080}
+                step={16}
+                value={clampCaptureMaxHeight(visionSettings.captureMaxHeight)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    captureMaxHeight: clampCaptureMaxHeight(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-jpeg-q">
+                JPEG品質: {clampJpegQuality(visionSettings.jpegQuality).toFixed(2)}
+              </label>
+              <input
+                id="vision-jpeg-q"
+                type="range"
+                min={0.35}
+                max={0.95}
+                step={0.01}
+                value={clampJpegQuality(visionSettings.jpegQuality)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    jpegQuality: clampJpegQuality(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-preview-h">
+                プレビュー枠の高さ: {clampPreviewMaxHeightPx(visionSettings.previewMaxHeightPx)} px
+              </label>
+              <input
+                id="vision-preview-h"
+                type="range"
+                min={120}
+                max={520}
+                step={10}
+                value={clampPreviewMaxHeightPx(visionSettings.previewMaxHeightPx)}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    previewMaxHeightPx: clampPreviewMaxHeightPx(Number(e.target.value)),
+                  })
+                }
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="settings-field">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={visionSettings.sendWithUserMessage}
+                  onChange={(e) =>
+                    updateVisionSettings({
+                      ...visionSettings,
+                      sendWithUserMessage: e.target.checked,
+                    })
+                  }
+                  disabled={disabled}
+                />
+                自分の発言と同時にビジョンも送る（ビジョン窓が必要）
+              </label>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="vision-prompt">ビジョン指示文（任意）</label>
+              <textarea
+                id="vision-prompt"
+                value={visionSettings.prompt}
+                onChange={(e) =>
+                  updateVisionSettings({
+                    ...visionSettings,
+                    prompt: e.target.value,
+                  })
+                }
+                disabled={disabled}
+                rows={3}
+                placeholder="例: 画面の状況を短く実況して。重要な変化があれば指摘して。"
+              />
+            </div>
+          </>
+        )}
+      </div>
+
       {/* LLM Section */}
       <div className="settings-section">
         <button
@@ -697,6 +1034,70 @@ export function SettingsPanel({
                   />
                 </div>
               )}
+
+            <div className="settings-field">
+              <label htmlFor="llm-system-prompt">システムプロンプト</label>
+              <textarea
+                id="llm-system-prompt"
+                rows={5}
+                value={settings.llm.systemPrompt}
+                onChange={(e) => updateSystemPrompt(e.target.value)}
+                disabled={disabled}
+                placeholder="AI の役割・口調・禁止事項などを書けます。"
+              />
+              <p className="settings-field-hint">
+                変更後は次のメッセージから適用されます（会話履歴はそのまま）。
+              </p>
+              <div className="settings-system-preset-save">
+                <input
+                  type="text"
+                  value={systemPromptPresetName}
+                  onChange={(e) => setSystemPromptPresetName(e.target.value)}
+                  placeholder="プリセット名（未入力なら自動）"
+                  disabled={disabled}
+                  aria-label="プリセット名"
+                />
+                <button
+                  type="button"
+                  className="settings-action-button"
+                  disabled={disabled}
+                  onClick={() => {
+                    addSystemPromptPreset(systemPromptPresetName);
+                    setSystemPromptPresetName('');
+                  }}
+                >
+                  現在の内容をプリセットに保存
+                </button>
+              </div>
+              {settings.llm.systemPromptPresets.length > 0 && (
+                <ul
+                  className="settings-system-preset-list"
+                  aria-label="保存したプリセット"
+                >
+                  {settings.llm.systemPromptPresets.map((p) => (
+                    <li key={p.id}>
+                      <span className="settings-system-preset-name">{p.name}</span>
+                      <button
+                        type="button"
+                        className="settings-clear-button"
+                        disabled={disabled}
+                        onClick={() => applySystemPromptPreset(p.id)}
+                      >
+                        読み込み
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-clear-button"
+                        disabled={disabled}
+                        onClick={() => removeSystemPromptPreset(p.id)}
+                      >
+                        削除
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -1723,12 +2124,795 @@ export function SettingsPanel({
               </div>
             </div>
             <div className="settings-field">
+              <label>VRM背景（クロマキー）</label>
+              <p className="settings-field-hint">
+                PCのチャット画面・ステージ用ウィンドウのVRM向けです。スマホのチャットVRMは暗色固定です。
+                ステージ専用ウィンドウ（?window=stage）では、メイン画面と同期するためリップシンク送信に含めた色が即反映されます。
+              </p>
+              <div className="vrm-bg-switch vrm-bg-switch--settings" role="group" aria-label="クロマキー色">
+                <button
+                  type="button"
+                  className={settings.visual.vrmChromaBg === 'green' ? 'is-active' : ''}
+                  onClick={() => updateVrmChromaBg('green')}
+                  disabled={disabled}
+                >
+                  緑
+                </button>
+                <button
+                  type="button"
+                  className={settings.visual.vrmChromaBg === 'blue' ? 'is-active' : ''}
+                  onClick={() => updateVrmChromaBg('blue')}
+                  disabled={disabled}
+                >
+                  青
+                </button>
+                <button
+                  type="button"
+                  className={settings.visual.vrmChromaBg === 'purple' ? 'is-active' : ''}
+                  onClick={() => updateVrmChromaBg('purple')}
+                  disabled={disabled}
+                >
+                  紫
+                </button>
+              </div>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-ambient-light">VRM 環境光の強さ</label>
+              <input
+                id="vrm-ambient-light"
+                type="range"
+                min={0}
+                max={2}
+                step={0.05}
+                value={settings.visual.vrmLighting.ambientIntensity}
+                onChange={(e) =>
+                  updateVrmLighting({
+                    ambientIntensity: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmLighting.ambientIntensity.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-directional-light">VRM 指向光の強さ</label>
+              <input
+                id="vrm-directional-light"
+                type="range"
+                min={0}
+                max={2}
+                step={0.05}
+                value={settings.visual.vrmLighting.directionalIntensity}
+                onChange={(e) =>
+                  updateVrmLighting({
+                    directionalIntensity: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmLighting.directionalIntensity.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label>指向光の位置（X / Y / Z）</label>
+              <p className="settings-field-hint">
+                ワールド座標です。光はこの位置から原点（モデル付近）へ向かう平行光として扱われます。顎下の影を弱めたいときは Y を上げる、横から当てたいときは X を動かす、など。
+              </p>
+              <div className="settings-file-picker-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <label htmlFor="vrm-dir-light-x" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#aab8c8' }}>X</span>
+                  <input
+                    id="vrm-dir-light-x"
+                    type="number"
+                    step={0.1}
+                    min={-50}
+                    max={50}
+                    value={settings.visual.vrmLighting.directionalLightX}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      updateVrmLighting({ directionalLightX: v });
+                    }}
+                    disabled={disabled}
+                  />
+                </label>
+                <label htmlFor="vrm-dir-light-y" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#aab8c8' }}>Y</span>
+                  <input
+                    id="vrm-dir-light-y"
+                    type="number"
+                    step={0.1}
+                    min={-50}
+                    max={50}
+                    value={settings.visual.vrmLighting.directionalLightY}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      updateVrmLighting({ directionalLightY: v });
+                    }}
+                    disabled={disabled}
+                  />
+                </label>
+                <label htmlFor="vrm-dir-light-z" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#aab8c8' }}>Z</span>
+                  <input
+                    id="vrm-dir-light-z"
+                    type="number"
+                    step={0.1}
+                    min={-50}
+                    max={50}
+                    value={settings.visual.vrmLighting.directionalLightZ}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      updateVrmLighting({ directionalLightZ: v });
+                    }}
+                    disabled={disabled}
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="settings-field">
+              <label>旧式 VRM 表情（手動まばたき）</label>
+              <p className="settings-field-hint">
+                アイドル VRMA の Blink を上書きします。チャットの感情タグ（例: happy）とプレビューで Happy / Sad などのプリセットを 0→1 で切り替え、一定秒後にニュートラルへ戻せます。喜びは <code>joy</code> も喜び扱いです。
+              </p>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-legacy-mouth-sens">口パク感度</label>
+              <input
+                id="vrm-legacy-mouth-sens"
+                type="range"
+                min={0.1}
+                max={2.5}
+                step={0.05}
+                value={settings.visual.vrmLegacyExpression.mouthSensitivity}
+                onChange={(e) =>
+                  updateVrmLegacyExpression({
+                    mouthSensitivity: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmLegacyExpression.mouthSensitivity.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-legacy-auto-neutral">感情の自動ニュートラル（秒、0でオフ）</label>
+              <input
+                id="vrm-legacy-auto-neutral"
+                type="range"
+                min={0}
+                max={120}
+                step={1}
+                value={settings.visual.vrmLegacyExpression.emotionAutoNeutralSeconds}
+                onChange={(e) =>
+                  updateVrmLegacyExpression({
+                    emotionAutoNeutralSeconds: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmLegacyExpression.emotionAutoNeutralSeconds}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label>感情ごとのまばたきを有効にする</label>
+              <div className="settings-file-picker-row" style={{ flexWrap: 'wrap', gap: 12 }}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileNeutral}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({ blinkWhileNeutral: e.target.checked })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  ニュートラル
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileHappy}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({ blinkWhileHappy: e.target.checked })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  喜び
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileSad}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({ blinkWhileSad: e.target.checked })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  悲しみ
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileAngry}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({ blinkWhileAngry: e.target.checked })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  怒り
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileSurprised}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({
+                        blinkWhileSurprised: e.target.checked,
+                      })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  驚き
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={settings.visual.vrmLegacyExpression.blinkWhileRelaxed}
+                    onChange={(e) =>
+                      updateVrmLegacyExpression({ blinkWhileRelaxed: e.target.checked })
+                    }
+                    disabled={disabled}
+                  />{' '}
+                  リラックス
+                </label>
+              </div>
+            </div>
+            <div className="settings-field">
+              <label>感情ごとのまばたきの強さ（0〜1）</label>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {(
+                  [
+                    ['neutral', 'ニュートラル', 'blinkIntensityNeutral'],
+                    ['happy', '喜び', 'blinkIntensityHappy'],
+                    ['sad', '悲しみ', 'blinkIntensitySad'],
+                    ['angry', '怒り', 'blinkIntensityAngry'],
+                    ['surprised', '驚き', 'blinkIntensitySurprised'],
+                    ['relaxed', 'リラックス', 'blinkIntensityRelaxed'],
+                  ] as const
+                ).map(([key, label, field]) => (
+                  <div key={key} className="settings-field" style={{ marginBottom: 0 }}>
+                    <label htmlFor={`vrm-legacy-bi-${key}`}>{label}</label>
+                    <input
+                      id={`vrm-legacy-bi-${key}`}
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={
+                        settings.visual.vrmLegacyExpression[
+                          field as keyof typeof settings.visual.vrmLegacyExpression
+                        ] as number
+                      }
+                      onChange={(e) =>
+                        updateVrmLegacyExpression({
+                          [field]: Number(e.target.value),
+                        } as Parameters<typeof updateVrmLegacyExpression>[0])
+                      }
+                      disabled={disabled}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="settings-field">
+              <label>VRM 表情・口パクの調整</label>
+              <p className="settings-field-hint">
+                下の「口の追従速度」は旧式表情でも使用します。その他（感情の最大強さなど）は旧式のプリセット制御では使わず、下段の「感情ごとのまばたき・口パク・ニュートラル復帰」はチューニング表示用です。
+              </p>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-mood-max">感情の最大強さ</label>
+              <input
+                id="vrm-mood-max"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.visual.vrmExpressionBlend.moodMaxWeight}
+                onChange={(e) =>
+                  updateVrmExpressionBlend({
+                    moodMaxWeight: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmExpressionBlend.moodMaxWeight.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-mood-while-speaking">発話中の感情倍率</label>
+              <input
+                id="vrm-mood-while-speaking"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.visual.vrmExpressionBlend.moodScaleWhileSpeaking}
+                onChange={(e) =>
+                  updateVrmExpressionBlend({
+                    moodScaleWhileSpeaking: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmExpressionBlend.moodScaleWhileSpeaking.toFixed(
+                  2,
+                )}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-mood-blend-speed">感情の変化速度</label>
+              <input
+                id="vrm-mood-blend-speed"
+                type="range"
+                min={0.05}
+                max={1}
+                step={0.01}
+                value={settings.visual.vrmExpressionBlend.moodBlendSpeed}
+                onChange={(e) =>
+                  updateVrmExpressionBlend({
+                    moodBlendSpeed: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmExpressionBlend.moodBlendSpeed.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-mouth-blend-speed">口の追従速度</label>
+              <input
+                id="vrm-mouth-blend-speed"
+                type="range"
+                min={0.05}
+                max={1}
+                step={0.01}
+                value={settings.visual.vrmExpressionBlend.mouthBlendSpeed}
+                onChange={(e) =>
+                  updateVrmExpressionBlend({
+                    mouthBlendSpeed: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmExpressionBlend.mouthBlendSpeed.toFixed(2)}
+              </span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="vrm-blink-reduce-mood">まばたき時の感情弱め</label>
+              <input
+                id="vrm-blink-reduce-mood"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.visual.vrmExpressionBlend.reduceMoodDuringBlink}
+                onChange={(e) =>
+                  updateVrmExpressionBlend({
+                    reduceMoodDuringBlink: Number(e.target.value),
+                  })
+                }
+                disabled={disabled}
+              />
+              <span className="settings-range-value">
+                {settings.visual.vrmExpressionBlend.reduceMoodDuringBlink.toFixed(
+                  2,
+                )}
+              </span>
+              <p className="settings-field-hint">0 でオフ。大きいほど Blink が強いとき感情を抑えます。</p>
+            </div>
+            <div className="settings-field">
+              <label>感情ごとのまばたき・口パク・ニュートラル復帰</label>
+              <p className="settings-field-hint">
+                [neutral] / [happy] / [angry] / [sad] / [relaxed] / [surprised]
+                ごとに調整します。ニュートラル復帰は「その感情をやめたあと」表情が消える目安の秒（指数減衰）です。
+                下の「プレビュー」で VRM 上の見え方を確認できます（同一タブ内のモデルはそのまま反応。VRM を <code>?window=stage</code> の別ウィンドウに出しているときは BroadcastChannel で表情プレビューも届きます）。
+              </p>
+              <div className="settings-file-picker-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  type="button"
+                  className="settings-clear-button"
+                  disabled={disabled}
+                  onClick={() => dispatchVrmEmotionPreview(null)}
+                >
+                  表情プレビューを終了
+                </button>
+              </div>
+            </div>
+            {VRM_TUNE_EMOTION_IDS.map((emotionId) => {
+              const t = settings.visual.vrmEmotionTunes[emotionId];
+              return (
+                <details key={emotionId} className="settings-field">
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                    {VRM_EMOTION_TUNING_LABELS[emotionId]}
+                  </summary>
+                  <p className="settings-field-hint" style={{ marginTop: 8 }}>
+                    {VRM_EMOTION_FACE_HINTS[emotionId]}
+                  </p>
+                  <div className="settings-file-picker-row" style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      className={`settings-file-trigger${disabled ? ' is-disabled' : ''}`}
+                      disabled={disabled}
+                      onClick={() => dispatchVrmEmotionPreview(emotionId)}
+                    >
+                      この表情をVRMでプレビュー（約15秒）
+                    </button>
+                  </div>
+                  <div className="settings-field" style={{ marginTop: 8 }}>
+                    <label htmlFor={`vrm-tune-blink-${emotionId}`}>まばたき強度係数</label>
+                    <input
+                      id={`vrm-tune-blink-${emotionId}`}
+                      type="range"
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      value={t.blinkIntensity}
+                      onChange={(e) =>
+                        updateVrmEmotionTune(emotionId, {
+                          blinkIntensity: Number(e.target.value),
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    <span className="settings-range-value">
+                      {t.blinkIntensity.toFixed(2)}
+                    </span>
+                    <p className="settings-field-hint">
+                      Blink 検出に掛ける倍率。大きいほどまばたきで感情が抑えられやすいです。
+                    </p>
+                  </div>
+                  <div className="settings-field">
+                    <label htmlFor={`vrm-tune-mouth-${emotionId}`}>口パク強度係数</label>
+                    <input
+                      id={`vrm-tune-mouth-${emotionId}`}
+                      type="range"
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      value={t.mouthIntensity}
+                      onChange={(e) =>
+                        updateVrmEmotionTune(emotionId, {
+                          mouthIntensity: Number(e.target.value),
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    <span className="settings-range-value">
+                      {t.mouthIntensity.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="settings-field">
+                    <label htmlFor={`vrm-tune-recover-${emotionId}`}>
+                      ニュートラルへ戻る目安（秒）
+                    </label>
+                    <input
+                      id={`vrm-tune-recover-${emotionId}`}
+                      type="range"
+                      min={0.05}
+                      max={8}
+                      step={0.05}
+                      value={t.neutralRecoverSec}
+                      onChange={(e) =>
+                        updateVrmEmotionTune(emotionId, {
+                          neutralRecoverSec: Number(e.target.value),
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    <span className="settings-range-value">
+                      {t.neutralRecoverSec.toFixed(2)}s
+                    </span>
+                  </div>
+                </details>
+              );
+            })}
+            <div className="settings-field">
               <label>アバター（VRM）</label>
+              <div className="settings-file-picker-row">
+                <input
+                  id="avatar-vrm-file"
+                  className="settings-file-input-hidden"
+                  type="file"
+                  accept=".vrm"
+                  disabled={disabled}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.currentTarget.value = '';
+                    if (!file) return;
+                    if (!file.name.toLowerCase().endsWith('.vrm')) return;
+                    try {
+                      const buf = await file.arrayBuffer();
+                      await saveVrmBuffer(buf);
+                      publishVrmControl({ action: 'reload' });
+                    } catch (err) {
+                      console.error(err);
+                    }
+                  }}
+                />
+                <label
+                  htmlFor="avatar-vrm-file"
+                  className={`settings-file-trigger${disabled ? ' is-disabled' : ''}`}
+                >
+                  VRMを変更
+                </label>
+                <button
+                  type="button"
+                  className="settings-clear-button"
+                  onClick={async () => {
+                    await clearStoredVrm();
+                    publishVrmControl({ action: 'bundled' });
+                  }}
+                  disabled={disabled}
+                >
+                  同梱モデル
+                </button>
+              </div>
               <div className="settings-file-actions">
                 <span className="settings-file-status">
-                  /avatar/miko.vrm を使用
+                  モデルは即時反映されます（VRM を別ウィンドウ表示している場合も BroadcastChannel で同期します）
                 </span>
               </div>
+            </div>
+            <div className="settings-field">
+              <label>バックアップ・リストア</label>
+              <p className="settings-field-hint">
+                この画面の設定（LLM / TTS / ストリーム / ビジュアル）に加え、ビジョン設定・オービットカメラの保存位置・IndexedDB
+                のカスタム VRM を1つの JSON ファイルにまとめます。API キー等の秘密が平文で入るため、共有・公開リポジトリに置かないでください。
+              </p>
+              <div className="settings-file-picker-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  type="button"
+                  className="settings-file-trigger"
+                  disabled={disabled}
+                  onClick={async () => {
+                    setBackupRestoreError(null);
+                    setBackupRestoreHint(null);
+                    try {
+                      const payload = await buildAppBackupFileV1(
+                        settings,
+                        loadVisionSettings(),
+                      );
+                      downloadAppBackupJson(payload);
+                      setBackupRestoreHint('バックアップをダウンロードしました。');
+                    } catch (e) {
+                      console.error(e);
+                      setBackupRestoreError(
+                        'バックアップの作成に失敗しました。コンソールを確認してください。',
+                      );
+                    }
+                  }}
+                >
+                  バックアップをダウンロード
+                </button>
+                <input
+                  ref={backupRestoreInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="settings-file-input-hidden"
+                  disabled={disabled}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.currentTarget.value = '';
+                    if (!file) return;
+                    setBackupRestoreError(null);
+                    setBackupRestoreHint(null);
+                    try {
+                      const text = await file.text();
+                      const result = await restoreAppBackupFromJson(
+                        text,
+                        applySettingsFromBackup,
+                      );
+                      if (!result.ok) {
+                        setBackupRestoreError(result.message);
+                        return;
+                      }
+                      setBackupRestoreHint(
+                        'リストアしました。VRM は再読み込み済みです。別ウィンドウやビジョンUIの表示を揃えるには再読み込みを推奨します。',
+                      );
+                      if (
+                        result.reloadSuggested
+                        && typeof window !== 'undefined'
+                        && window.confirm(
+                          'ページを再読み込みして全タブの表示を揃えますか？（キャンセルでも設定は保存済みです）',
+                        )
+                      ) {
+                        window.location.reload();
+                      }
+                    } catch (err) {
+                      console.error(err);
+                      setBackupRestoreError(
+                        'リストア処理中にエラーが発生しました。コンソールを確認してください。',
+                      );
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="settings-clear-button"
+                  disabled={disabled}
+                  onClick={() => backupRestoreInputRef.current?.click()}
+                >
+                  バックアップからリストア…
+                </button>
+              </div>
+              {backupRestoreHint && (
+                <p className="settings-field-hint" style={{ color: '#8bc34a' }}>
+                  {backupRestoreHint}
+                </p>
+              )}
+              {backupRestoreError && (
+                <p className="settings-field-hint" style={{ color: '#ff8a80' }}>
+                  {backupRestoreError}
+                </p>
+              )}
+            </div>
+            <div className="settings-field">
+              <label>復元ポイント（このブラウザ内）</label>
+              <p className="settings-field-hint">
+                大きな改修の前に「今の設定＋VRM＋ビジョン＋カメラ」を IndexedDB にスナップショットとして残します。最大
+                12 件で、それ以上は古いものから自動で削除されます。コード変更とは無関係で、ブラウザのデータを消すと消えます。
+              </p>
+              <div className="settings-field" style={{ marginBottom: 8 }}>
+                <label htmlFor="restore-point-label">ポイント名</label>
+                <input
+                  id="restore-point-label"
+                  type="text"
+                  maxLength={80}
+                  value={restorePointLabel}
+                  onChange={(e) => setRestorePointLabel(e.target.value)}
+                  disabled={disabled}
+                  style={{ width: '100%', maxWidth: 360, marginTop: 4 }}
+                />
+              </div>
+              <div className="settings-file-picker-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  type="button"
+                  className="settings-file-trigger"
+                  disabled={disabled}
+                  onClick={async () => {
+                    setBackupRestoreError(null);
+                    setBackupRestoreHint(null);
+                    try {
+                      const snapshot = await buildAppBackupFileV1(
+                        settings,
+                        loadVisionSettings(),
+                      );
+                      await saveRestorePoint(restorePointLabel, snapshot);
+                      await refreshRestorePointsList();
+                      setBackupRestoreHint(
+                        '復元ポイントを保存しました。一覧からいつでもこの時点へ戻せます。',
+                      );
+                    } catch (e) {
+                      console.error(e);
+                      setBackupRestoreError(
+                        '復元ポイントの保存に失敗しました。ストレージ容量やブラウザの制限を確認してください。',
+                      );
+                    }
+                  }}
+                >
+                  この状態を復元ポイントに保存
+                </button>
+              </div>
+              {restorePointsList.length > 0 ? (
+                <ul
+                  className="settings-restore-points-list"
+                  style={{
+                    listStyle: 'none',
+                    marginTop: 12,
+                    padding: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  {restorePointsList.map((rp) => (
+                    <li
+                      key={rp.id}
+                      style={{
+                        border: '1px solid #0f3460',
+                        borderRadius: 8,
+                        padding: '8px 10px',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        gap: 8,
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600 }}>{rp.label}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#aab8c8' }}>
+                          {new Date(rp.createdAt).toLocaleString('ja-JP')}
+                        </div>
+                      </div>
+                      <div className="settings-file-picker-row" style={{ gap: 6 }}>
+                        <button
+                          type="button"
+                          className="settings-file-trigger"
+                          disabled={disabled}
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                'この復元ポイントの内容で現在の設定・VRM・ビジョン・カメラを上書きします。よろしいですか？',
+                              )
+                            ) {
+                              return;
+                            }
+                            setBackupRestoreError(null);
+                            setBackupRestoreHint(null);
+                            const result = await restoreAppBackupFromObject(
+                              rp.snapshot,
+                              applySettingsFromBackup,
+                            );
+                            if (!result.ok) {
+                              setBackupRestoreError(result.message);
+                              return;
+                            }
+                            setBackupRestoreHint(
+                              '復元ポイントの内容を適用しました。別ウィンドウを揃える場合は再読み込みしてください。',
+                            );
+                            if (
+                              result.reloadSuggested
+                              && window.confirm(
+                                'ページを再読み込みしますか？（キャンセルでも変更は保存済みです）',
+                              )
+                            ) {
+                              window.location.reload();
+                            }
+                          }}
+                        >
+                          この時点へ戻す
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-clear-button"
+                          disabled={disabled}
+                          onClick={async () => {
+                            if (!window.confirm('この復元ポイントを削除しますか？')) {
+                              return;
+                            }
+                            try {
+                              await deleteRestorePoint(rp.id);
+                              await refreshRestorePointsList();
+                            } catch (err) {
+                              console.error(err);
+                              setBackupRestoreError('復元ポイントの削除に失敗しました。');
+                            }
+                          }}
+                        >
+                          削除
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="settings-field-hint" style={{ marginTop: 8 }}>
+                  保存済みの復元ポイントはまだありません。
+                </p>
+              )}
             </div>
           </>
         )}
@@ -1750,6 +2934,13 @@ export function SettingsPanel({
         updateTwitchChannel={updateTwitchChannel}
         updateTwitchEnabled={updateTwitchEnabled}
         updateTwitchCommentIntervalMs={updateTwitchCommentIntervalMs}
+        updateJikkyoTcpEnabled={updateJikkyoTcpEnabled}
+        updateJikkyoListenPort={updateJikkyoListenPort}
+        updateJikkyoBouyomiPort={updateJikkyoBouyomiPort}
+        updateJikkyoForwardToBouyomi={updateJikkyoForwardToBouyomi}
+        updateJikkyoSendToAi={updateJikkyoSendToAi}
+        updateJikkyoAiHeaderEnabled={updateJikkyoAiHeaderEnabled}
+        updateJikkyoAiHeaderText={updateJikkyoAiHeaderText}
       />
     </div>
   );

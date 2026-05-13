@@ -21,6 +21,13 @@ interface StreamSettingsProps {
   updateTwitchChannel: (value: string) => void;
   updateTwitchEnabled: (value: boolean) => void;
   updateTwitchCommentIntervalMs: (value: number) => void;
+  updateJikkyoTcpEnabled: (value: boolean) => void;
+  updateJikkyoListenPort: (value: number) => void;
+  updateJikkyoBouyomiPort: (value: number) => void;
+  updateJikkyoForwardToBouyomi: (value: boolean) => void;
+  updateJikkyoSendToAi: (value: boolean) => void;
+  updateJikkyoAiHeaderEnabled: (value: boolean) => void;
+  updateJikkyoAiHeaderText: (value: string) => void;
 }
 
 function getTwitchRedirectUri(): string {
@@ -47,6 +54,13 @@ export function StreamSettings({
   updateTwitchChannel,
   updateTwitchEnabled,
   updateTwitchCommentIntervalMs,
+  updateJikkyoTcpEnabled,
+  updateJikkyoListenPort,
+  updateJikkyoBouyomiPort,
+  updateJikkyoForwardToBouyomi,
+  updateJikkyoSendToAi,
+  updateJikkyoAiHeaderEnabled,
+  updateJikkyoAiHeaderText,
 }: StreamSettingsProps) {
   const twitchRedirectUri = getTwitchRedirectUri();
   const isYoutubeSelected = stream.platform === 'youtube';
@@ -284,6 +298,117 @@ export function StreamSettings({
           {streamErrorMessage ? (
             <p className="settings-field-error">{streamErrorMessage}</p>
           ) : null}
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-enabled">
+              <input
+                id="stream-jikkyo-enabled"
+                type="checkbox"
+                checked={stream.jikkyoTcpEnabled}
+                onChange={(event) =>
+                  updateJikkyoTcpEnabled(event.target.checked)
+                }
+                disabled={disabled}
+                style={{ marginRight: 8 }}
+              />
+              実況掲示板TCP受信を有効化
+            </label>
+            <p className="settings-field-hint">
+              受信: TCP {stream.jikkyoListenPort}（例: 50000）
+            </p>
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-listen-port">受信ポート</label>
+            <input
+              id="stream-jikkyo-listen-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={stream.jikkyoListenPort}
+              onChange={(event) =>
+                updateJikkyoListenPort(Number(event.target.value || 0))
+              }
+              disabled={disabled}
+            />
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-bouyomi-port">
+              棒読みちゃん送信ポート
+            </label>
+            <input
+              id="stream-jikkyo-bouyomi-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={stream.jikkyoBouyomiPort}
+              onChange={(event) =>
+                updateJikkyoBouyomiPort(Number(event.target.value || 0))
+              }
+              disabled={disabled}
+            />
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-forward-bouyomi">
+              <input
+                id="stream-jikkyo-forward-bouyomi"
+                type="checkbox"
+                checked={stream.jikkyoForwardToBouyomi}
+                onChange={(event) =>
+                  updateJikkyoForwardToBouyomi(event.target.checked)
+                }
+                disabled={disabled}
+                style={{ marginRight: 8 }}
+              />
+              棒読みちゃん（TCP）へ転送
+            </label>
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-send-ai">
+              <input
+                id="stream-jikkyo-send-ai"
+                type="checkbox"
+                checked={stream.jikkyoSendToAi}
+                onChange={(event) => updateJikkyoSendToAi(event.target.checked)}
+                disabled={disabled}
+                style={{ marginRight: 8 }}
+              />
+              ヘッダー除去した本文をAIへ送る
+            </label>
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-ai-header-enabled">
+              <input
+                id="stream-jikkyo-ai-header-enabled"
+                type="checkbox"
+                checked={stream.jikkyoAiHeaderEnabled}
+                onChange={(event) =>
+                  updateJikkyoAiHeaderEnabled(event.target.checked)
+                }
+                disabled={disabled}
+                style={{ marginRight: 8 }}
+              />
+              AI送信時にヘッダを付ける
+            </label>
+          </div>
+
+          <div className="settings-field">
+            <label htmlFor="stream-jikkyo-ai-header-text">AI送信ヘッダ</label>
+            <input
+              id="stream-jikkyo-ai-header-text"
+              type="text"
+              value={stream.jikkyoAiHeaderText}
+              onChange={(event) =>
+                updateJikkyoAiHeaderText(event.target.value)
+              }
+              placeholder="掲示板："
+              disabled={disabled || !stream.jikkyoAiHeaderEnabled}
+            />
+          </div>
         </>
       )}
     </div>
