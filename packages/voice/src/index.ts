@@ -17,6 +17,8 @@ export type {
   ElevenLabsVoiceServiceOptions,
   VoiceVoxQueryParameterOverrides,
   AivisSpeechQueryParameterOverrides,
+  VoicepeakEmotionByNarrator,
+  VoicepeakEmotionTagMapByNarrator,
 } from './services/VoiceService';
 export { VoiceEngineAdapter } from './services/VoiceEngineAdapter';
 export type { PiperPlusAssets } from './engines/PiperPlusEngine';

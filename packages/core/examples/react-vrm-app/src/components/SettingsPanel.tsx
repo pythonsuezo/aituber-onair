@@ -33,6 +33,12 @@ import {
 } from '../utils/restorePointsStorage';
 import { clearStoredVrm, saveVrmBuffer } from '../utils/vrmBlobStorage';
 import { publishVrmControl, publishVrmEmotionPreview } from '../windowMode';
+import {
+  VOICEPEAK_EMOTION_BY_NARRATOR,
+  VOICEPEAK_NARRATOR_EMOTION_PARAM_HINT_DEFAULT,
+  VOICEPEAK_NARRATOR_EMOTION_PARAM_HINTS,
+  VOICEPEAK_NARRATOR_TAG_REFERENCE,
+} from '../constants/voicepeakNarratorEmotions';
 
 type SettingsHook = ReturnType<typeof useSettings>;
 
@@ -160,14 +166,22 @@ function dispatchVrmEmotionPreview(
   );
 }
 
+/** VOICEPEAK のナレーター ID（`voicepeak --list-narrator` と一致させる） */
 const VOICEPEAK_SPEAKERS = [
-  { id: 'f1', name: '日本人女性 1' },
-  { id: 'f2', name: '日本人女性 2' },
-  { id: 'f3', name: '日本人女性 3' },
-  { id: 'm1', name: '日本人男性 1' },
-  { id: 'm2', name: '日本人男性 2' },
-  { id: 'm3', name: '日本人男性 3' },
-  { id: 'c', name: '女の子' },
+  { id: 'Kasane Teto', name: '重音テト' },
+  { id: 'Frimomen', name: 'フリモメン' },
+  { id: 'Jashinchan', name: '邪神ちゃん' },
+];
+
+/** VOICEPEAK 設定: 会話の感情タグ（小文字）ごとの `emotion` パラメータ */
+const VOICEPEAK_EMOTION_TAG_ROWS: { tag: string; label: string }[] = [
+  { tag: 'neutral', label: '[neutral]' },
+  { tag: 'happy', label: '[happy]' },
+  { tag: 'joy', label: '[joy]' },
+  { tag: 'sad', label: '[sad]' },
+  { tag: 'angry', label: '[angry]' },
+  { tag: 'surprised', label: '[surprised]' },
+  { tag: 'relaxed', label: '[relaxed]' },
 ];
 
 const AIVIS_CLOUD_PRESETS = [
@@ -233,6 +247,7 @@ export function SettingsPanel({
   updateGeminiTtsPrompt,
   updateVoicevoxApiUrl,
   updateVoicepeakApiUrl,
+  updateVoicepeakEmotionTagMapEntry,
   updateAivisSpeechApiUrl,
   updateAivisCloudApiKey,
   updateAivisCloudModelUuid,
@@ -281,6 +296,10 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const disabled = isProcessing;
   const [systemPromptPresetName, setSystemPromptPresetName] = useState('');
+  const [voicepeakCustomTagDraft, setVoicepeakCustomTagDraft] = useState({
+    tag: '',
+    param: '',
+  });
   const openRouterApiKey = getApiKeyForProvider('openrouter').trim();
   const openRouterDynamicFreeModels =
     settings.llm.openRouterDynamicFreeModels?.models || [];
@@ -303,6 +322,38 @@ export function SettingsPanel({
   const [isFetchingElevenLabsVoices, setIsFetchingElevenLabsVoices] =
     useState(false);
   const speakerRef = useRef(settings.tts.speaker);
+  const voicepeakExtraTagEntries = useMemo(() => {
+    if (settings.tts.engine !== 'voicepeak') return [];
+    const preset = new Set(VOICEPEAK_EMOTION_TAG_ROWS.map((r) => r.tag));
+    const m =
+      settings.tts.voicepeakEmotionTagMapByNarrator?.[settings.tts.speaker] ??
+      {};
+    return Object.entries(m).filter(([k]) => !preset.has(k));
+  }, [
+    settings.tts.engine,
+    settings.tts.speaker,
+    settings.tts.voicepeakEmotionTagMapByNarrator,
+  ]);
+
+  const voicepeakStyleFallbackLine = useMemo(() => {
+    if (settings.tts.engine !== 'voicepeak') return null;
+    const row = VOICEPEAK_EMOTION_BY_NARRATOR[
+      settings.tts.speaker as keyof typeof VOICEPEAK_EMOTION_BY_NARRATOR
+    ] as Record<string, string> | undefined;
+    if (!row) return null;
+    const text = Object.entries(row)
+      .map(([k, v]) => `${k}→${v}`)
+      .join(' · ');
+    return (
+      <p className="settings-field-hint">
+        タグ欄が空のときのフォールバック（会話スタイル→emotion）: {text}
+      </p>
+    );
+  }, [settings.tts.engine, settings.tts.speaker]);
+
+  const voicepeakTagReference = useMemo(() => {
+    return VOICEPEAK_NARRATOR_TAG_REFERENCE[settings.tts.speaker];
+  }, [settings.tts.speaker]);
   const backupRestoreInputRef = useRef<HTMLInputElement | null>(null);
   const [backupRestoreHint, setBackupRestoreHint] = useState<string | null>(
     null,
@@ -1903,6 +1954,16 @@ export function SettingsPanel({
                       </option>
                     ))}
                   </select>
+                  <p className="settings-field-hint">
+                    {VOICEPEAK_NARRATOR_EMOTION_PARAM_HINTS[settings.tts.speaker] ??
+                      VOICEPEAK_NARRATOR_EMOTION_PARAM_HINT_DEFAULT}
+                  </p>
+                  {voicepeakStyleFallbackLine}
+                  <p className="settings-field-hint">
+                    下の「感情タグ→emotion」表は{' '}
+                    <strong>今選んでいるスピーカー ID ごと</strong>
+                    に保存されます。話者を切り替えると、その話者用の別表を編集します。
+                  </p>
                 </div>
                 <div className="settings-field">
                   <label htmlFor="tts-voicepeak-url">API URL</label>
@@ -1914,6 +1975,174 @@ export function SettingsPanel({
                     placeholder="http://localhost:20202"
                     disabled={disabled}
                   />
+                </div>
+                <div className="settings-field">
+                  <div style={{ marginBottom: '0.35rem' }}>
+                    <strong>感情タグ → VOICEPEAK emotion</strong>
+                  </div>
+                  <p className="settings-field-hint">
+                    各タグの入力が空のときは、下の折りたたみの組み込み既定が読み上げに使われ、入力した行だけが上書きされます。
+                    重み付きは <code>happy=40,fun=60</code> のように1行で指定できます。
+                  </p>
+                  {voicepeakTagReference &&
+                    Object.keys(voicepeakTagReference).length > 0 && (
+                      <details className="settings-voicepeak-reference">
+                        <summary>
+                          この話者の組み込み既定（空欄タグへ自動適用・上の入力で上書き）
+                        </summary>
+                        <table className="settings-voicepeak-reference-table">
+                          <thead>
+                            <tr>
+                              <th>感情タグ</th>
+                              <th>emotion 参考</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {VOICEPEAK_EMOTION_TAG_ROWS.flatMap(
+                              ({ tag, label }) => {
+                                const ref = voicepeakTagReference[tag];
+                                if (!ref) return [];
+                                return [
+                                  <tr key={tag}>
+                                    <td>{label}</td>
+                                    <td>
+                                      <code>{ref}</code>
+                                    </td>
+                                  </tr>,
+                                ];
+                              },
+                            )}
+                          </tbody>
+                        </table>
+                      </details>
+                    )}
+                  <div className="settings-voicepeak-tag-rows">
+                    {VOICEPEAK_EMOTION_TAG_ROWS.map(({ tag, label }) => (
+                      <div key={tag} className="settings-voicepeak-tag-row">
+                        <label htmlFor={`tts-voicepeak-tag-${tag}`}>
+                          {label}
+                        </label>
+                        <input
+                          id={`tts-voicepeak-tag-${tag}`}
+                          type="text"
+                          spellCheck={false}
+                          value={
+                            settings.tts.voicepeakEmotionTagMapByNarrator?.[
+                              settings.tts.speaker
+                            ]?.[tag] ?? ''
+                          }
+                          onChange={(e) =>
+                            updateVoicepeakEmotionTagMapEntry(
+                              settings.tts.speaker,
+                              tag,
+                              e.target.value,
+                            )
+                          }
+                          disabled={disabled}
+                          placeholder={
+                            voicepeakTagReference?.[tag] ??
+                            '例: teto-sweet または happy=40,fun=60'
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {voicepeakExtraTagEntries.length > 0 && (
+                    <div
+                      className="settings-voicepeak-tag-rows"
+                      style={{ marginTop: '0.75rem' }}
+                    >
+                      <div style={{ marginBottom: '0.35rem' }}>
+                        <strong>その他のタグ</strong>
+                      </div>
+                      {voicepeakExtraTagEntries.map(([tag, param]) => (
+                        <div key={tag} className="settings-voicepeak-tag-row">
+                          <span className="settings-voicepeak-extra-tag">
+                            [{tag}]
+                          </span>
+                          <input
+                            type="text"
+                            spellCheck={false}
+                            value={param}
+                            onChange={(e) =>
+                              updateVoicepeakEmotionTagMapEntry(
+                                settings.tts.speaker,
+                                tag,
+                                e.target.value,
+                              )
+                            }
+                            disabled={disabled}
+                          />
+                          <button
+                            type="button"
+                            className="settings-clear-button"
+                            disabled={disabled}
+                            onClick={() =>
+                              updateVoicepeakEmotionTagMapEntry(
+                                settings.tts.speaker,
+                                tag,
+                                '',
+                              )
+                            }
+                          >
+                            削除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div
+                    className="settings-voicepeak-tag-row"
+                    style={{ marginTop: '0.75rem' }}
+                  >
+                    <input
+                      type="text"
+                      spellCheck={false}
+                      aria-label="追加する感情タグ（小文字）"
+                      placeholder="タグ名（例: custom）"
+                      value={voicepeakCustomTagDraft.tag}
+                      onChange={(e) =>
+                        setVoicepeakCustomTagDraft((d) => ({
+                          ...d,
+                          tag: e.target.value,
+                        }))
+                      }
+                      disabled={disabled}
+                    />
+                    <input
+                      type="text"
+                      spellCheck={false}
+                      aria-label="追加する emotion パラメータ"
+                      placeholder="emotion 値"
+                      value={voicepeakCustomTagDraft.param}
+                      onChange={(e) =>
+                        setVoicepeakCustomTagDraft((d) => ({
+                          ...d,
+                          param: e.target.value,
+                        }))
+                      }
+                      disabled={disabled}
+                    />
+                    <button
+                      type="button"
+                      className="settings-action-button"
+                      disabled={
+                        disabled ||
+                        !voicepeakCustomTagDraft.tag.trim() ||
+                        !voicepeakCustomTagDraft.param.trim()
+                      }
+                      onClick={() => {
+                        updateVoicepeakEmotionTagMapEntry(
+                          settings.tts.speaker,
+                          voicepeakCustomTagDraft.tag,
+                          voicepeakCustomTagDraft.param,
+                        );
+                        setVoicepeakCustomTagDraft({ tag: '', param: '' });
+                      }}
+                    >
+                      タグ行を追加
+                    </button>
+                  </div>
                 </div>
               </>
             )}

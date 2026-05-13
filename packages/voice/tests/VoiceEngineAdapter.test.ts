@@ -83,6 +83,8 @@ describe('VoiceEngineAdapter', () => {
       setAudioChannel: vi.fn(),
       setTemperature: vi.fn(),
       setNoiseScale: vi.fn(),
+      setNarratorEmotionMap: vi.fn(),
+      setNarratorTagEmotionMap: vi.fn(),
       setSilenceDurations: vi.fn(),
       setOutputFormat: vi.fn(),
       setOutputBitrate: vi.fn(),
@@ -176,6 +178,69 @@ describe('VoiceEngineAdapter', () => {
       expect(mockEngine.setEmotion).toHaveBeenCalledWith('angry');
       expect(mockEngine.setSpeed).toHaveBeenCalledWith(180);
       expect(mockEngine.setPitch).toHaveBeenCalledWith(120);
+    });
+
+    it('should pass narrator-specific emotion map to VoicePeak engine', async () => {
+      const map = {
+        'Kasane Teto': { happy: 'teto-sweet' },
+      };
+      const options: VoiceServiceOptions = {
+        engineType: 'voicepeak',
+        speaker: 'f1',
+        voicepeakEmotionByNarrator: map,
+        onPlay: vi.fn(),
+      };
+
+      const mockAudioBuffer = new ArrayBuffer(1024);
+      mockEngine.fetchAudio.mockResolvedValue(mockAudioBuffer);
+
+      const adapter = new VoiceEngineAdapter(options);
+      await adapter.speak({ text: 'VoicePeak test' });
+
+      expect(mockEngine.setNarratorEmotionMap).toHaveBeenCalledWith(map);
+    });
+
+    it('should pass tag-level emotion map to VoicePeak engine', async () => {
+      const tagMap = {
+        f1: { happy: 'happy=40,fun=60' },
+      };
+      const options: VoiceServiceOptions = {
+        engineType: 'voicepeak',
+        speaker: 'f1',
+        voicepeakEmotionTagMapByNarrator: tagMap,
+        onPlay: vi.fn(),
+      };
+
+      const mockAudioBuffer = new ArrayBuffer(1024);
+      mockEngine.fetchAudio.mockResolvedValue(mockAudioBuffer);
+
+      const adapter = new VoiceEngineAdapter(options);
+      await adapter.speak({ text: 'VoicePeak test' });
+
+      expect(mockEngine.setNarratorTagEmotionMap).toHaveBeenCalledWith(tagMap);
+    });
+
+    it('should forward screenplay emotion to fetchAudio for tag mapping', async () => {
+      const options: VoiceServiceOptions = {
+        engineType: 'voicepeak',
+        speaker: 'f1',
+        onPlay: vi.fn(),
+      };
+
+      const mockAudioBuffer = new ArrayBuffer(1024);
+      mockEngine.fetchAudio.mockResolvedValue(mockAudioBuffer);
+
+      const adapter = new VoiceEngineAdapter(options);
+      await adapter.speak({ text: 'Hello', emotion: 'joy' });
+
+      expect(mockEngine.fetchAudio).toHaveBeenCalledWith(
+        expect.objectContaining({
+          style: 'happy',
+          screenplayEmotion: 'joy',
+        }),
+        'f1',
+        expect.anything(),
+      );
     });
   });
 
@@ -1038,6 +1103,45 @@ describe('VoiceEngineAdapter', () => {
       expect(consoleSpy).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe('Queued synthesis', () => {
+    it('does not start fetchAudio for a queued speak until the previous request finishes synthesis', async () => {
+      const options: VoiceServiceOptions = {
+        engineType: 'minimax',
+        speaker: 'test-speaker',
+        apiKey: 'test-api-key',
+        groupId: 'test-group-id',
+        onPlay: vi.fn(),
+      };
+
+      let releaseFirst: (buf: ArrayBuffer) => void = () => {};
+      const firstDeferred = new Promise<ArrayBuffer>((resolve) => {
+        releaseFirst = resolve;
+      });
+
+      mockEngine.fetchAudio
+        .mockReturnValueOnce(firstDeferred)
+        .mockResolvedValue(new ArrayBuffer(4));
+
+      mockGetEngine.mockReturnValue(mockEngine);
+
+      const adapter = new VoiceEngineAdapter(options);
+
+      const p1 = adapter.speak({ text: 'first' });
+      const p2 = adapter.speak({ text: 'second' });
+
+      await Promise.resolve();
+      expect(mockEngine.fetchAudio).toHaveBeenCalledTimes(1);
+
+      releaseFirst(new ArrayBuffer(8));
+      await p1;
+
+      await Promise.resolve();
+      expect(mockEngine.fetchAudio).toHaveBeenCalledTimes(2);
+
+      await p2;
     });
   });
 

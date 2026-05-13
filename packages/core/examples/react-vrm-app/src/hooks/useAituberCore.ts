@@ -18,6 +18,11 @@ import {
   DEFAULT_AITUBER_SYSTEM_PROMPT,
   LEGACY_VRM_SYSTEM_PROMPT_MARKER,
 } from '../constants/defaultAituberSystemPrompt';
+import {
+  VOICEPEAK_EMOTION_BY_NARRATOR,
+  VOICEPEAK_NARRATOR_TAG_REFERENCE,
+  mergeVoicepeakEmotionTagMaps,
+} from '../constants/voicepeakNarratorEmotions';
 
 interface UseAituberCoreOptions {
   onAudioPlay: (arrayBuffer: ArrayBuffer) => Promise<void>;
@@ -153,7 +158,7 @@ function buildVoiceOptions(
     speaker:
       tts.engine === 'openaiCompatible' && !trimmedSpeaker
         ? undefined
-        : tts.speaker,
+        : trimmedSpeaker,
     apiKey,
     openAiCompatibleApiUrl: tts.openAiCompatibleApiUrl,
     openAiCompatibleModel: tts.openAiCompatibleModel,
@@ -234,6 +239,15 @@ function buildVoiceOptions(
     piperPlusNoiseScale: Number.isNaN(parsedPiperPlusNoiseScale)
       ? undefined
       : parsedPiperPlusNoiseScale,
+    ...(tts.engine === 'voicepeak'
+      ? {
+          voicepeakEmotionByNarrator: VOICEPEAK_EMOTION_BY_NARRATOR,
+          voicepeakEmotionTagMapByNarrator: mergeVoicepeakEmotionTagMaps(
+            VOICEPEAK_NARRATOR_TAG_REFERENCE,
+            tts.voicepeakEmotionTagMapByNarrator,
+          ),
+        }
+      : {}),
     onPlay,
   } as VoiceServiceOptions;
 }
@@ -466,6 +480,7 @@ export function useAituberCore({
     settings.tts.openAiCompatibleSpeed,
     settings.tts.voicevoxApiUrl,
     settings.tts.voicepeakApiUrl,
+    settings.tts.voicepeakEmotionTagMapByNarrator,
     settings.tts.aivisSpeechApiUrl,
     settings.tts.aivisCloudModelUuid,
     settings.tts.aivisCloudSpeakerUuid,

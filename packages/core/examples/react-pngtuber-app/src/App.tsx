@@ -37,11 +37,9 @@ export default function App() {
 
   const handleSend = useCallback(
     (text: string) => {
-      // Stop previous audio if speech is currently playing
-      stop();
       processChat(text);
     },
-    [stop, processChat]
+    [processChat]
   );
 
   const handleYoutubeComment = useCallback(

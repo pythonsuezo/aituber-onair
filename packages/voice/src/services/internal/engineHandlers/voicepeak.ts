@@ -12,6 +12,8 @@ const allowedUpdateKeys = [
   'voicepeakEmotion',
   'voicepeakSpeed',
   'voicepeakPitch',
+  'voicepeakEmotionByNarrator',
+  'voicepeakEmotionTagMapByNarrator',
 ] as const;
 
 export const voicePeakEngineHandler: EngineHandler<VoicePeakVoiceServiceOptions> =
@@ -27,13 +29,34 @@ export const voicePeakEngineHandler: EngineHandler<VoicePeakVoiceServiceOptions>
         options.voicepeakEmotion !== undefined &&
         voicepeakEngine.setEmotion
       ) {
-        voicepeakEngine.setEmotion(options.voicepeakEmotion);
+        const em = options.voicepeakEmotion;
+        if (typeof em === 'string' && em.trim() === '') {
+          voicepeakEngine.setEmotion(undefined);
+        } else {
+          voicepeakEngine.setEmotion(em);
+        }
       }
       if (options.voicepeakSpeed !== undefined && voicepeakEngine.setSpeed) {
         voicepeakEngine.setSpeed(options.voicepeakSpeed);
       }
       if (options.voicepeakPitch !== undefined && voicepeakEngine.setPitch) {
         voicepeakEngine.setPitch(options.voicepeakPitch);
+      }
+      if (
+        options.voicepeakEmotionByNarrator !== undefined &&
+        voicepeakEngine.setNarratorEmotionMap
+      ) {
+        voicepeakEngine.setNarratorEmotionMap(
+          options.voicepeakEmotionByNarrator,
+        );
+      }
+      if (
+        options.voicepeakEmotionTagMapByNarrator !== undefined &&
+        voicepeakEngine.setNarratorTagEmotionMap
+      ) {
+        voicepeakEngine.setNarratorTagEmotionMap(
+          options.voicepeakEmotionTagMapByNarrator,
+        );
       }
     },
     mergeOptions(current, update) {

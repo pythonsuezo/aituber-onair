@@ -22,6 +22,8 @@ export type TalkStyle = (typeof talkStyles)[number];
 export type Talk = {
   style: TalkStyle;
   message: string;
+  /** `[happy]` 等の生タグ（小文字）。VOICEPEAK のタグ別マッピングに使用 */
+  screenplayEmotion?: string;
 };
 
 /**

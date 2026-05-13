@@ -20,7 +20,6 @@ interface SpeechRequest {
   id: number;
   screenplay: ChatScreenplay;
   options?: AudioPlayOptions;
-  audioPromise: Promise<ArrayBuffer>;
   resolve: () => void;
   reject: (error: unknown) => void;
   completionPromise: Promise<void>;
@@ -106,15 +105,10 @@ export class VoiceEngineAdapter implements VoiceService {
       rejectInner(error);
     };
 
-    const audioPromise = this.fetchAudioForScreenplay(screenplay);
-    // Prevent unhandled rejections; actual handling occurs in processQueue.
-    audioPromise.catch(() => {});
-
     return {
       id,
       screenplay,
       options,
-      audioPromise,
       resolve: resolveFn,
       reject: rejectFn,
       completionPromise,
@@ -135,7 +129,9 @@ export class VoiceEngineAdapter implements VoiceService {
 
         let audioBuffer: ArrayBuffer;
         try {
-          audioBuffer = await request.audioPromise;
+          // Defer synthesis until this request is at the front of the queue so
+          // burst speak() calls (e.g. chunked assistant lines) do not hammer TTS APIs in parallel.
+          audioBuffer = await this.fetchAudioForScreenplay(request.screenplay);
         } catch (error) {
           console.error('Error fetching audio for speech:', error);
           request.reject(error);
@@ -170,11 +166,14 @@ export class VoiceEngineAdapter implements VoiceService {
       case 'angry':
         return 'angry';
       case 'happy':
+      case 'joy':
         return 'happy';
       case 'sad':
         return 'sad';
       case 'surprised':
         return 'surprised';
+      case 'relaxed':
+        return 'neutral';
       default:
         return 'neutral';
     }
@@ -186,6 +185,9 @@ export class VoiceEngineAdapter implements VoiceService {
     const talk: Talk = {
       style: this.mapEmotionToStyle(screenplay.emotion),
       message: screenplay.text,
+      screenplayEmotion: screenplay.emotion
+        ? screenplay.emotion.trim().toLowerCase()
+        : undefined,
     };
 
     const engine = await this.getEngine();

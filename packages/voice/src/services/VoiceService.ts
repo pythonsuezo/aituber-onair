@@ -10,7 +10,21 @@ import type { VoiceVoxQueryParameterOverrides } from '../engines/VoiceVoxEngine'
 export type { VoiceVoxQueryParameterOverrides };
 export type { AivisSpeechQueryParameterOverrides };
 import { ChatScreenplay } from '../types/chat';
-import type { VoicepeakEmotionInput } from '../types/voice';
+import type { TalkStyle, VoicepeakEmotionInput } from '../types/voice';
+
+/**
+ * ナレーター ID（`speaker`）ごとに、読み上げスタイル（`TalkStyle`）を
+ * VOICEPEAK / vpeakserver の `emotion` パラメータ文字列へ変換する。
+ */
+export type VoicepeakEmotionByNarrator = Partial<
+  Record<string, Partial<Record<TalkStyle, string>>>
+>;
+
+/** ナレーター ID → 感情タグ（小文字）→ vpeak `emotion` 文字列（例: `happy=40,fun=60`） */
+export type VoicepeakEmotionTagMapByNarrator = Record<
+  string,
+  Record<string, string>
+>;
 
 /**
  * MiniMax audio format types
@@ -113,6 +127,16 @@ export interface VoicePeakVoiceServiceOptions
   voicepeakSpeed?: number;
   /** VoicePeak pitch (-300 to 300, integer) */
   voicepeakPitch?: number;
+  /**
+   * ナレーターごとの感情パラメータ名（例: `teto-sweet`）。
+   * 指定時は `talk.style` をこの表で変換してから API に送る。
+   */
+  voicepeakEmotionByNarrator?: VoicepeakEmotionByNarrator;
+  /**
+   * ナレーターごとに、画面の感情タグ（`[happy]` 等）→ vpeak `emotion` 文字列。
+   * `happy=40,fun=60` のような重み付きもそのまま渡せる。`talk.screenplayEmotion` が一致したとき最優先。
+   */
+  voicepeakEmotionTagMapByNarrator?: VoicepeakEmotionTagMapByNarrator;
 }
 
 export interface OpenAiVoiceServiceOptions extends VoiceServiceCommonOptions {

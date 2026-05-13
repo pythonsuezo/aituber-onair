@@ -2,6 +2,7 @@ import { VOICEPEAK_API_URL } from '../constants/voiceEngine';
 import {
   EmotionTypeForVoicepeak,
   Talk,
+  TalkStyle,
   VoicepeakEmotionInput,
   VoicepeakEmotionWeights,
 } from '../types/voice';
@@ -24,15 +25,19 @@ export class VoicePeakEngine implements VoiceEngine {
   private emotionOverride?: VoicepeakEmotionInput;
   private speedOverride?: number;
   private pitchOverride?: number;
+  private narratorEmotionMap?: Partial<
+    Record<string, Partial<Record<TalkStyle, string>>>
+  >;
+  private narratorTagEmotionMap?: Partial<
+    Record<string, Record<string, string>>
+  >;
 
   async fetchAudio(input: Talk, speaker: string): Promise<ArrayBuffer> {
     const talk = input as Talk;
-    const resolvedEmotionRaw =
-      typeof this.emotionOverride === 'string'
-        ? this.emotionOverride
-        : this.emotionOverride === undefined
-          ? this.mapEmotionStyle(talk.style || 'talk')
-          : this.serializeWeights(this.emotionOverride);
+    const resolvedEmotionRaw = this.resolveVoicepeakEmotionForRequest(
+      speaker,
+      talk,
+    );
     const resolvedEmotion = this.normalizeEmotionParam(resolvedEmotionRaw);
     const resolvedSpeed = this.speedOverride;
     const resolvedPitch = this.pitchOverride;
@@ -48,10 +53,23 @@ export class VoicePeakEngine implements VoiceEngine {
     const ttsQueryResponse = await fetch(ttsQueryUrl, { method: 'POST' });
 
     if (!ttsQueryResponse.ok) {
-      throw new Error('Failed to fetch TTS query.');
+      const detail = await VoicePeakEngine.readFetchErrorDetail(ttsQueryResponse);
+      throw new Error(`Failed to fetch TTS query. ${detail}`);
     }
 
-    const ttsQueryJson = await ttsQueryResponse.json();
+    const ttsQueryBody = await ttsQueryResponse.text();
+    let ttsQueryJson: Record<string, unknown>;
+    try {
+      ttsQueryJson = JSON.parse(ttsQueryBody) as Record<string, unknown>;
+    } catch (parseErr) {
+      const clipped =
+        ttsQueryBody.length > 400
+          ? `${ttsQueryBody.slice(0, 400)}…`
+          : ttsQueryBody;
+      throw new Error(
+        `VoicePeak TTS: audio_query returned invalid JSON (status ${ttsQueryResponse.status}). Parse error: ${String(parseErr)}. Body (clipped): ${JSON.stringify(clipped)}`,
+      );
+    }
 
     // set emotion from talk.style
     if (resolvedEmotion !== undefined) {
@@ -68,18 +86,132 @@ export class VoicePeakEngine implements VoiceEngine {
 
     const synthesisUrl = this.buildUrl('/synthesis', { speaker });
 
+    let synthesisBody: string;
+    try {
+      synthesisBody = JSON.stringify(ttsQueryJson);
+    } catch (stringifyErr) {
+      throw new Error(
+        `VoicePeak TTS: failed to serialize synthesis JSON: ${String(stringifyErr)}`,
+      );
+    }
+
     const synthesisResponse = await fetch(synthesisUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ttsQueryJson),
+      body: synthesisBody,
     });
 
     if (!synthesisResponse.ok) {
-      throw new Error('Failed to fetch TTS synthesis result.');
+      const detail = await VoicePeakEngine.readFetchErrorDetail(synthesisResponse);
+      throw new Error(`Failed to fetch TTS synthesis result. ${detail}`);
     }
 
     const blob = await synthesisResponse.blob();
     return await blob.arrayBuffer();
+  }
+
+  /**
+   * ナレーター ID ごとの `emotion` 名（製品・声によって異なる）を登録する。
+   */
+  setNarratorEmotionMap(
+    map?: Partial<Record<string, Partial<Record<TalkStyle, string>>>>,
+  ): void {
+    this.narratorEmotionMap =
+      map === undefined ? undefined : { ...map };
+  }
+
+  /**
+   * 感情タグ（`[happy]` の `happy`）→ `emotion` 文字列の対応をナレーターごとに登録する。
+   */
+  setNarratorTagEmotionMap(
+    map?: Partial<Record<string, Record<string, string>>>,
+  ): void {
+    this.narratorTagEmotionMap =
+      map === undefined ? undefined : { ...map };
+  }
+
+  /**
+   * `voicepeakEmotion` が重みマップで、かつシリアライズ結果が空のときは
+   * 「上書きなし」と同じにし、`talk.screenplayEmotion` / style から決める。
+   * （設定 UI が `{}` を保存すると `[joy]` 等が無視されていた）
+   */
+  private resolveVoicepeakEmotionForRequest(
+    speaker: string,
+    talk: Talk,
+  ): EmotionTypeForVoicepeak | string | undefined {
+    if (typeof this.emotionOverride === 'string') {
+      const t = this.emotionOverride.trim();
+      if (t === '') {
+        return this.resolveStyleToVoicepeakEmotion(speaker, talk);
+      }
+      return this.emotionOverride;
+    }
+    if (this.emotionOverride === undefined) {
+      return this.resolveStyleToVoicepeakEmotion(speaker, talk);
+    }
+    const weighted = this.serializeWeights(this.emotionOverride);
+    if (weighted !== undefined) {
+      return weighted;
+    }
+    return this.resolveStyleToVoicepeakEmotion(speaker, talk);
+  }
+
+  /**
+   * `talk.screenplayEmotion`（最優先）→ `talk.style` の順で VOICEPEAK `emotion` を決める。
+   */
+  private resolveStyleToVoicepeakEmotion(
+    speaker: string,
+    talk: Talk,
+  ): EmotionTypeForVoicepeak | string {
+    const style = (talk.style ?? 'talk') as TalkStyle;
+    const styleKey: TalkStyle = style === 'talk' ? 'neutral' : style;
+    const rawTag = talk.screenplayEmotion?.trim().toLowerCase();
+
+    const tagMap = this.lookupNarratorEntry(this.narratorTagEmotionMap, speaker);
+    if (rawTag && tagMap?.[rawTag]) {
+      const trimmed = tagMap[rawTag].trim();
+      if (trimmed !== '') {
+        return trimmed;
+      }
+    }
+
+    const perSpeaker = this.lookupNarratorEntry(
+      this.narratorEmotionMap,
+      speaker,
+    );
+    if (perSpeaker) {
+      const mapped = perSpeaker[styleKey];
+      if (mapped !== undefined) {
+        const trimmed = mapped.trim();
+        if (trimmed !== '') {
+          return trimmed;
+        }
+      }
+    }
+    return this.mapEmotionStyle(style);
+  }
+
+  private lookupNarratorEntry<T>(
+    map: Partial<Record<string, T>> | undefined,
+    speaker: string,
+  ): T | undefined {
+    if (!map) {
+      return undefined;
+    }
+    const sp = speaker.trim();
+    if (!sp) {
+      return undefined;
+    }
+    if (map[sp] !== undefined) {
+      return map[sp];
+    }
+    const lower = sp.toLowerCase();
+    for (const [k, v] of Object.entries(map)) {
+      if (k.trim().toLowerCase() === lower) {
+        return v;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -210,7 +342,16 @@ export class VoicePeakEngine implements VoiceEngine {
   private normalizeEmotionParam(
     emotion: EmotionTypeForVoicepeak | string | undefined,
   ): string | undefined {
+    if (emotion === undefined || emotion === '') {
+      return undefined;
+    }
     return emotion === 'neutral' ? undefined : emotion;
+  }
+
+  private static async readFetchErrorDetail(res: Response): Promise<string> {
+    const text = await res.text().catch(() => '');
+    const clipped = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+    return `status=${res.status} body=${JSON.stringify(clipped)}`;
   }
 
   private buildUrl(

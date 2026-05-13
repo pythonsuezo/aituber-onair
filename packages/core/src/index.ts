@@ -264,6 +264,8 @@ export {
   type EmotionTypeForVoicepeak,
   type VoicepeakEmotionInput,
   type VoicepeakEmotionWeights,
+  type VoicepeakEmotionByNarrator,
+  type VoicepeakEmotionTagMapByNarrator,
   type Screenplay as VoiceScreenplay,
   type ChatScreenplay,
   type SpeakOptions,

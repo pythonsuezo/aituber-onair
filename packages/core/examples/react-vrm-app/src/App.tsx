@@ -407,7 +407,8 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      stop();
+      // Do not stop TTS here: assistant speech runs after LLM returns without
+      // blocking isProcessing, so the user can send while audio is still playing.
       const v = loadVisionSettings();
       if (v.sendWithUserMessage) {
         // テキスト専用の processChat は呼ばず、画像＋発言を1回の processVisionChat にまとめる
@@ -443,7 +444,6 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       }
     },
     [
-      stop,
       processChat,
       isMobileUi,
       inlineVisionOpen,
@@ -638,8 +638,8 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       )}
 
       {settingsOpen && (
-        <div className="settings-dialog-overlay" onClick={() => setSettingsOpen(false)}>
-          <div className="settings-dialog" onClick={e => e.stopPropagation()}>
+        <div className="settings-dialog-overlay">
+          <div className="settings-dialog">
             <div className="settings-dialog-header">
               <h2>Settings</h2>
               <button className="settings-dialog-close" onClick={() => setSettingsOpen(false)}>&times;</button>

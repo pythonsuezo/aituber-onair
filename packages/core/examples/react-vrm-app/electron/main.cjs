@@ -28,6 +28,9 @@ let allowQuit = false;
 
 const isDev = process.env.ELECTRON_DEV === '1';
 
+/** In dev, open renderer DevTools in a separate window at load (set ELECTRON_DEVTOOLS=0 to skip). */
+const openDetachedDevToolsAtLaunch = isDev && process.env.ELECTRON_DEVTOOLS !== '0';
+
 /** Keep in sync with `getWindowTitleForMode` in `src/windowMode.ts`. */
 const WIN_TITLE_CHAT = 'AITuber | チャット（操作・設定）';
 const WIN_TITLE_STAGE = 'AITuber | VRM';
@@ -327,6 +330,23 @@ function bringWindowForward(win) {
   }
 }
 
+/**
+ * Opens Chromium DevTools in a detached window once the page has finished loading.
+ * @param {BrowserWindow} win
+ * @param {string} label Log label (e.g. chat / stage)
+ */
+function openDetachedDevToolsWhenReady(win, label) {
+  if (!openDetachedDevToolsAtLaunch || !win) return;
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    try {
+      win.webContents.openDevTools({ mode: 'detach' });
+    } catch (err) {
+      console.warn(`[electron] openDevTools failed (${label}):`, err);
+    }
+  });
+}
+
 function attachWindowChrome(win, fixedTitle) {
   win.once('ready-to-show', () => bringWindowForward(win));
 
@@ -424,6 +444,7 @@ function createChatWindow(savedBounds) {
       query: { window: 'chat' },
     });
   }
+  openDetachedDevToolsWhenReady(chatWindow, 'chat');
 }
 
 function createStageWindow(savedBounds) {
@@ -453,6 +474,7 @@ function createStageWindow(savedBounds) {
       query: { window: 'stage' },
     });
   }
+  openDetachedDevToolsWhenReady(stageWindow, 'stage');
 }
 
 function createTray() {

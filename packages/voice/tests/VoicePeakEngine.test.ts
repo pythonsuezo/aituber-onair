@@ -18,6 +18,7 @@ describe('VoicePeakEngine', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({}),
+        text: async () => '{}',
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -77,6 +78,48 @@ describe('VoicePeakEngine', () => {
     expect(getSynthesisBody(fetchMock)).not.toHaveProperty('emotion');
   });
 
+  it('should fall back to screenplay/style when weight override serializes empty', async () => {
+    const engine = new VoicePeakEngine();
+    const fetchMock = createFetchMock();
+    globalThis.fetch = fetchMock as any;
+
+    engine.setEmotion({});
+    await engine.fetchAudio(
+      {
+        message: 'なあに、マスター！',
+        style: 'happy',
+        screenplayEmotion: 'joy',
+      } as any,
+      'Kasane Teto',
+    );
+
+    expect(getAudioQueryEmotion(fetchMock)).toBe('happy');
+    expect(getSynthesisBody(fetchMock).emotion).toBe('happy');
+  });
+
+  it('should match narrator tag map when speaker id has surrounding spaces', async () => {
+    const engine = new VoicePeakEngine();
+    const fetchMock = createFetchMock();
+    globalThis.fetch = fetchMock as any;
+
+    engine.setNarratorTagEmotionMap({
+      'Kasane Teto': { joy: 'teto-overactive=70,teto-powerful=30' },
+    });
+
+    await engine.fetchAudio(
+      {
+        message: 'やあ',
+        style: 'happy',
+        screenplayEmotion: 'joy',
+      } as any,
+      '  Kasane Teto  ',
+    );
+
+    expect(getAudioQueryEmotion(fetchMock)).toBe(
+      'teto-overactive=70,teto-powerful=30',
+    );
+  });
+
   it('should map talk.style when no override is provided', async () => {
     const engine = new VoicePeakEngine();
     const fetchMock = createFetchMock();
@@ -89,6 +132,68 @@ describe('VoicePeakEngine', () => {
 
     expect(getAudioQueryEmotion(fetchMock)).toBe('happy');
     expect(getSynthesisBody(fetchMock).emotion).toBe('happy');
+  });
+
+  it('should use per-narrator emotion names when map is set', async () => {
+    const engine = new VoicePeakEngine();
+    const fetchMock = createFetchMock();
+    globalThis.fetch = fetchMock as any;
+
+    engine.setNarratorEmotionMap({
+      'Kasane Teto': {
+        happy: 'teto-sweet',
+        neutral: 'teto-low-key',
+      },
+    });
+
+    await engine.fetchAudio(
+      { message: 'やったー', style: 'happy' },
+      'Kasane Teto',
+    );
+
+    expect(getAudioQueryEmotion(fetchMock)).toBe('teto-sweet');
+    expect(getSynthesisBody(fetchMock).emotion).toBe('teto-sweet');
+  });
+
+  it('should pass through weighted emotion strings from tag map', async () => {
+    const engine = new VoicePeakEngine();
+    const fetchMock = createFetchMock();
+    globalThis.fetch = fetchMock as any;
+
+    engine.setNarratorTagEmotionMap({
+      f1: { happy: 'happy=40,fun=60' },
+    });
+
+    await engine.fetchAudio(
+      {
+        message: 'テスト',
+        style: 'happy',
+        screenplayEmotion: 'happy',
+      },
+      'f1',
+    );
+
+    expect(getAudioQueryEmotion(fetchMock)).toBe('happy=40,fun=60');
+    expect(getSynthesisBody(fetchMock).emotion).toBe('happy=40,fun=60');
+  });
+
+  it('should fall back when speaker has map but style key is missing', async () => {
+    const engine = new VoicePeakEngine();
+    const fetchMock = createFetchMock();
+    globalThis.fetch = fetchMock as any;
+
+    engine.setNarratorEmotionMap({
+      'Kasane Teto': {
+        happy: 'teto-sweet',
+      },
+    });
+
+    await engine.fetchAudio(
+      { message: '怒るぞ', style: 'angry' },
+      'Kasane Teto',
+    );
+
+    expect(getAudioQueryEmotion(fetchMock)).toBe('angry');
   });
 
   it('should omit emotion when talk.style resolves to neutral', async () => {

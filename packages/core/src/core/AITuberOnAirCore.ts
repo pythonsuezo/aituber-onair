@@ -628,22 +628,22 @@ export class AITuberOnAirCore extends EventEmitter {
         try {
           this.emit(AITuberOnAirCoreEvent.SPEECH_START, screenplay);
 
-          const chunks = this.splitTextForSpeech(screenplay.text);
+          const chunks = this.splitTextForSpeech(screenplay.text).filter(
+            (chunk) => chunk,
+          );
           const emotion = screenplay.emotion;
 
-          const playbackPromises = chunks
-            .filter((chunk) => chunk)
-            .map((chunk) => {
-              const chunkScreenplay = emotion
-                ? { emotion, text: chunk }
-                : { text: chunk };
+          // Await chunks in order (VoiceEngineAdapter also serializes synthesis).
+          // Avoids Promise.all starting every speak() at once, which is harder to reason about when errors occur.
+          for (const chunk of chunks) {
+            const chunkScreenplay = emotion
+              ? { emotion, text: chunk }
+              : { text: chunk };
 
-              return this.voiceService!.speak(chunkScreenplay, {
-                enableAnimation: true,
-              });
+            await this.voiceService!.speak(chunkScreenplay, {
+              enableAnimation: true,
             });
-
-          await Promise.all(playbackPromises);
+          }
 
           this.emit(AITuberOnAirCoreEvent.SPEECH_END);
         } catch (error) {

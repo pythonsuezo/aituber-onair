@@ -38,6 +38,9 @@ next-env.d.ts
 
 .env
 
+# Local secrets / tokens (never commit — GitHub push protection)
+githubのPAT.txt
+
 # Package-specific ignores (for monorepo)
 packages/*/node_modules/
 packages/*/dist/

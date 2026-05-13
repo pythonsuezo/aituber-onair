@@ -6,6 +6,10 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "dev:with-vpeak": "concurrently -k -n vpeak,vrm -c cyan,green \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-vpeak-foreground.ps1\" \"vite\"",
+    "dev:with-vpeak:echo": "cross-env VPEAKSERVER_ECHO=1 concurrently -k -n vpeak,vrm -c cyan,green \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-vpeak-foreground.ps1\" \"vite\"",
+    "electron:with-vpeak": "concurrently -k -n vpeak,vite,eln -c cyan,green,magenta \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-vpeak-foreground.ps1\" \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DEV=1 electron .\"",
+    "electron:with-vpeak:echo": "cross-env VPEAKSERVER_ECHO=1 concurrently -k -n vpeak,vite,eln -c cyan,green,magenta \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-vpeak-foreground.ps1\" \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DEV=1 electron .\"",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DEV=1 electron .\"",
     "electron:start": "electron .",
     "build": "tsc -b && vite build",

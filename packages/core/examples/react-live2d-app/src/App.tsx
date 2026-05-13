@@ -64,10 +64,9 @@ export default function App() {
 
   const handleSend = useCallback(
     (text: string) => {
-      stop();
       processChat(text);
     },
-    [processChat, stop],
+    [processChat],
   );
 
   const handleYoutubeComment = useCallback(

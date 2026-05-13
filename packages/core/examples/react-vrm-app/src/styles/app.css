@@ -347,6 +347,71 @@ body {
   color: #ff8e8e;
 }
 
+.settings-voicepeak-tag-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+}
+
+.settings-voicepeak-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.settings-voicepeak-tag-row > label {
+  flex: 0 0 7.5rem;
+  font-size: 0.78rem;
+}
+
+.settings-voicepeak-tag-row > input[type='text'] {
+  flex: 1 1 10rem;
+  min-width: 8rem;
+}
+
+.settings-voicepeak-extra-tag {
+  flex: 0 0 7.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: #c8d4e0;
+}
+
+.settings-voicepeak-reference {
+  margin: 0.5rem 0 0.65rem;
+  font-size: 0.78rem;
+  color: #aabccf;
+}
+
+.settings-voicepeak-reference summary {
+  cursor: pointer;
+  color: #dce6f0;
+}
+
+.settings-voicepeak-reference-table {
+  width: 100%;
+  margin-top: 0.4rem;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+}
+
+.settings-voicepeak-reference-table th,
+.settings-voicepeak-reference-table td {
+  border: 1px solid #3a4a5c;
+  padding: 0.25rem 0.45rem;
+  text-align: left;
+}
+
+.settings-voicepeak-reference-table th {
+  background: #1e2835;
+  color: #c8d4e0;
+}
+
+.settings-voicepeak-reference-table code {
+  font-size: 0.72rem;
+}
+
 .app-main {
   display: flex;
   flex: 1;

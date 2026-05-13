@@ -494,6 +494,7 @@ function getDefaultSettings(): AppSettings {
       piperPlusVoiceFile: DEFAULT_PIPER_PLUS_VOICE_FILE,
       piperPlusSpeed: '',
       piperPlusNoiseScale: '',
+      voicepeakEmotionTagMapByNarrator: {},
     },
     stream: {
       platform: 'none',
@@ -525,6 +526,34 @@ function getDefaultSettings(): AppSettings {
   };
 }
 
+function normalizeVoicepeakEmotionTagMap(
+  value: unknown,
+): Record<string, Record<string, string>> {
+  if (value == null || typeof value !== 'object') {
+    return {};
+  }
+  const out: Record<string, Record<string, string>> = {};
+  for (const [narratorId, inner] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    const nid = narratorId.trim();
+    if (!nid || inner == null || typeof inner !== 'object') continue;
+    const innerOut: Record<string, string> = {};
+    for (const [tag, param] of Object.entries(
+      inner as Record<string, unknown>,
+    )) {
+      const t = String(tag).trim().toLowerCase();
+      const p = String(param ?? '').trim();
+      if (!t || !p) continue;
+      innerOut[t] = p;
+    }
+    if (Object.keys(innerOut).length > 0) {
+      out[nid] = innerOut;
+    }
+  }
+  return out;
+}
+
 /** 部分データを既定値とマージして `AppSettings` にする（localStorage / バックアップ共通） */
 export function reconcileAppSettings(saved: unknown): AppSettings {
   if (saved == null || typeof saved !== 'object') {
@@ -548,7 +577,14 @@ export function reconcileAppSettings(saved: unknown): AppSettings {
         partial.llm?.systemPromptPresets,
       ),
     },
-    tts: { ...defaults.tts, ...partial.tts },
+    tts: {
+      ...defaults.tts,
+      ...partial.tts,
+      voicepeakEmotionTagMapByNarrator: normalizeVoicepeakEmotionTagMap(
+        partial.tts?.voicepeakEmotionTagMapByNarrator ??
+          defaults.tts.voicepeakEmotionTagMapByNarrator,
+      ),
+    },
     stream: { ...defaults.stream, ...partial.stream },
     visual: {
       ...defaults.visual,
@@ -824,7 +860,7 @@ export function useSettings() {
       openai: 'alloy',
       geminiTts: 'Zephyr',
       openaiCompatible: '',
-      voicepeak: 'f1',
+      voicepeak: 'Kasane Teto',
       voicevox: '',
       aivisSpeech: '',
       aivisCloud: DEFAULT_AIVIS_CLOUD_MODEL_UUID,
@@ -957,7 +993,7 @@ export function useSettings() {
   const updateTTSSpeaker = useCallback((speaker: string) => {
     setSettings((prev) => ({
       ...prev,
-      tts: { ...prev.tts, speaker },
+      tts: { ...prev.tts, speaker: speaker.trim() },
     }));
   }, []);
 
@@ -1023,6 +1059,42 @@ export function useSettings() {
       tts: { ...prev.tts, voicepeakApiUrl: url },
     }));
   }, []);
+
+  const updateVoicepeakEmotionTagMapEntry = useCallback(
+    (narratorId: string, emotionTag: string, emotionParam: string) => {
+      const nid = narratorId.trim();
+      const tag = emotionTag.trim().toLowerCase();
+      const param = emotionParam.trim();
+      setSettings((prev) => {
+        const prevAll = normalizeVoicepeakEmotionTagMap(
+          prev.tts.voicepeakEmotionTagMapByNarrator,
+        );
+        const nextInner = { ...(prevAll[nid] ?? {}) };
+        if (!tag) {
+          return prev;
+        }
+        if (!param) {
+          delete nextInner[tag];
+        } else {
+          nextInner[tag] = param;
+        }
+        const nextAll = { ...prevAll };
+        if (Object.keys(nextInner).length === 0) {
+          delete nextAll[nid];
+        } else {
+          nextAll[nid] = nextInner;
+        }
+        return {
+          ...prev,
+          tts: {
+            ...prev.tts,
+            voicepeakEmotionTagMapByNarrator: nextAll,
+          },
+        };
+      });
+    },
+    [],
+  );
 
   const updateAivisSpeechApiUrl = useCallback((url: string) => {
     setSettings((prev) => ({
@@ -1420,6 +1492,7 @@ export function useSettings() {
     updateGeminiTtsPrompt,
     updateVoicevoxApiUrl,
     updateVoicepeakApiUrl,
+    updateVoicepeakEmotionTagMapEntry,
     updateAivisSpeechApiUrl,
     updateAivisCloudApiKey,
     updateAivisCloudModelUuid,

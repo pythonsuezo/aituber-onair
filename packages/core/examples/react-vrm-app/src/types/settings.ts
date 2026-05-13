@@ -212,6 +212,10 @@ export interface TTSSettings {
   piperPlusVoiceFile?: string;
   piperPlusSpeed?: string;
   piperPlusNoiseScale?: string;
+  /**
+   * VOICEPEAK: ナレーター ID → 感情タグ（小文字）→ vpeak `emotion`（例 `happy=40,fun=60`）
+   */
+  voicepeakEmotionTagMapByNarrator?: Record<string, Record<string, string>>;
 }
 
 export interface StreamSettings {

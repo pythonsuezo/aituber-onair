@@ -44,6 +44,12 @@ export interface VoicePeakConfigurableEngine extends VoiceEngine {
   setEmotion?(value?: VoicePeakVoiceServiceOptions['voicepeakEmotion']): void;
   setSpeed?(value?: number): void;
   setPitch?(value?: number): void;
+  setNarratorEmotionMap?(
+    value?: VoicePeakVoiceServiceOptions['voicepeakEmotionByNarrator'],
+  ): void;
+  setNarratorTagEmotionMap?(
+    value?: VoicePeakVoiceServiceOptions['voicepeakEmotionTagMapByNarrator'],
+  ): void;
 }
 
 export interface AivisSpeechConfigurableEngine extends VoiceEngine {
