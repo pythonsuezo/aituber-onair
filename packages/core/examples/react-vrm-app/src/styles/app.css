@@ -838,6 +838,7 @@ body {
   flex-direction: column;
   gap: 10px;
   box-sizing: border-box;
+  min-height: calc(100dvh - 24px);
 }
 
 .vision-window-toolbar {
@@ -930,6 +931,22 @@ body {
   align-self: center;
   margin-bottom: 6px;
   border-radius: 10px;
+}
+
+/* Vision専用ウィンドウでは、スマホ向け縦プレビューを使わず
+   ウィンドウサイズに合わせて横16:9で拡大縮小する */
+.vision-window--simple .capture-vision-bar--minimal .capture-vision-preview-wrap {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  aspect-ratio: auto;
+}
+
+.vision-window--simple .capture-vision-bar--minimal {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-bottom: 8px;
 }
 
 .capture-vision-bar--minimal .capture-vision-row {

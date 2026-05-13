@@ -14,7 +14,10 @@ import type {
 } from '@aituber-onair/core';
 import type { ChatMessage } from '../types/chat';
 import type { AppSettings, ChatProviderOption } from '../types/settings';
-import { DEFAULT_AITUBER_SYSTEM_PROMPT } from '../constants/defaultAituberSystemPrompt';
+import {
+  DEFAULT_AITUBER_SYSTEM_PROMPT,
+  LEGACY_VRM_SYSTEM_PROMPT_MARKER,
+} from '../constants/defaultAituberSystemPrompt';
 
 interface UseAituberCoreOptions {
   onAudioPlay: (arrayBuffer: ArrayBuffer) => Promise<void>;
@@ -23,6 +26,17 @@ interface UseAituberCoreOptions {
 }
 
 const DEFAULT_SYSTEM_PROMPT = DEFAULT_AITUBER_SYSTEM_PROMPT;
+
+/** 設定欄に保存された全文既定などを、固定ブロックの「追記分」だけに正規化する。 */
+function normalizeUserSystemPromptExtra(raw: string): string {
+  let t = raw.trim();
+  if (!t) return '';
+  if (t === DEFAULT_AITUBER_SYSTEM_PROMPT.trim()) return '';
+  if (t.includes(LEGACY_VRM_SYSTEM_PROMPT_MARKER)) {
+    t = (t.split(LEGACY_VRM_SYSTEM_PROMPT_MARKER)[0] ?? '').trim();
+  }
+  return t;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -263,8 +277,12 @@ export function useAituberCore({
     settings.llm.provider === 'openai-compatible'
       ? settings.llm.model.trim() || 'local-model'
       : settings.llm.model;
-  const effectiveSystemPrompt =
-    settings.llm.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const userSystemPromptExtra = normalizeUserSystemPromptExtra(
+    settings.llm.systemPrompt ?? '',
+  );
+  const effectiveSystemPrompt = userSystemPromptExtra
+    ? `${DEFAULT_SYSTEM_PROMPT}\n\n${userSystemPromptExtra}`
+    : DEFAULT_SYSTEM_PROMPT;
   const createMessageId = useCallback(() => {
     messageIdSequenceRef.current += 1;
     return `${Date.now()}-${messageIdSequenceRef.current}`;

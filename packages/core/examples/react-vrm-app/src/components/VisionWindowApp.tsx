@@ -34,6 +34,7 @@ function buildOneShotPromptFromRequest(msg: Extract<VisionChannelMessage, { type
 export function VisionWindowApp() {
   const send = useVisionChannelSender();
   const [settings, setSettings] = useState<VisionSettingsV1>(() => loadVisionSettings());
+  const [minimalOptionsVisible, setMinimalOptionsVisible] = useState(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -148,55 +149,31 @@ export function VisionWindowApp() {
         captureMaxWidth={capW}
         captureMaxHeight={capH}
         jpegQuality={jpegQ}
+        minimalOptionsVisible={minimalOptionsVisible}
+        onToggleMinimalOptions={() => setMinimalOptionsVisible((v) => !v)}
+        periodicEnabled={settings.enabled}
+        onTogglePeriodicEnabled={() =>
+          persist({
+            ...settings,
+            enabled: !settings.enabled,
+          })
+        }
+        sendWithUserMessageEnabled={settings.sendWithUserMessage}
+        onToggleSendWithUserMessage={() =>
+          persist({
+            ...settings,
+            sendWithUserMessage: !settings.sendWithUserMessage,
+          })
+        }
+        periodicIntervalSec={intervalSec}
+        onChangePeriodicIntervalSec={(next) =>
+          persist({
+            ...settings,
+            intervalSec: clampVisionIntervalSec(next),
+          })
+        }
       />
 
-      <div className="vision-window-toolbar">
-        <div className="vision-toolbar-buttons">
-          <button
-            type="button"
-            className={`vision-mode-btn${settings.enabled ? ' vision-mode-btn--on' : ''}`}
-            aria-pressed={settings.enabled}
-            onClick={() => persist({ ...settings, enabled: !settings.enabled })}
-          >
-            定時送信
-          </button>
-          <button
-            type="button"
-            className={`vision-mode-btn${settings.sendWithUserMessage ? ' vision-mode-btn--on' : ''}`}
-            aria-pressed={settings.sendWithUserMessage}
-            onClick={() =>
-              persist({
-                ...settings,
-                sendWithUserMessage: !settings.sendWithUserMessage,
-              })
-            }
-          >
-            同時送信
-          </button>
-        </div>
-
-        {settings.enabled ? (
-          <label className="vision-toolbar-interval">
-            <span className="vision-toolbar-interval-label">{intervalSec} 秒</span>
-            <input
-              type="range"
-              min={5}
-              max={180}
-              value={intervalSec}
-              onChange={(e) =>
-                persist({
-                  ...settings,
-                  intervalSec: clampVisionIntervalSec(Number(e.target.value)),
-                })
-              }
-            />
-          </label>
-        ) : null}
-
-        <p className="vision-toolbar-hint">
-          画質・指示文・変化検知はチャット窓の ⚙ Vision から変更できます。
-        </p>
-      </div>
     </div>
   );
 }

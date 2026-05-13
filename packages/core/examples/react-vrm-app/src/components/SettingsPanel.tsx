@@ -1036,17 +1036,19 @@ export function SettingsPanel({
               )}
 
             <div className="settings-field">
-              <label htmlFor="llm-system-prompt">システムプロンプト</label>
+              <label htmlFor="llm-system-prompt">
+                追加システムプロンプト（任意）
+              </label>
               <textarea
                 id="llm-system-prompt"
                 rows={5}
                 value={settings.llm.systemPrompt}
                 onChange={(e) => updateSystemPrompt(e.target.value)}
                 disabled={disabled}
-                placeholder="AI の役割・口調・禁止事項などを書けます。"
+                placeholder="VRM の表情ルールはアプリが常に先頭に付けます。ここには役割・口調・禁止事項など追記したい分だけ書けます。"
               />
               <p className="settings-field-hint">
-                変更後は次のメッセージから適用されます（会話履歴はそのまま）。
+                固定の VRM 表情ルールはコード側の既定が常に先頭に付き、その下にここで書いた内容が続きます。変更後は次のメッセージから適用されます（会話履歴はそのまま）。
               </p>
               <div className="settings-system-preset-save">
                 <input

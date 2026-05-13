@@ -341,7 +341,7 @@ export function CaptureVisionBar({
 
 
 
-  const startDeviceCapture = useCallback(async () => {
+  const startDeviceCapture = useCallback(async (deviceIdOverride?: string) => {
 
     if (!navigator.mediaDevices?.getUserMedia) {
 
@@ -353,11 +353,12 @@ export function CaptureVisionBar({
 
     try {
 
+      const activeDeviceId = (deviceIdOverride ?? selectedDeviceId).trim();
       const constraints: MediaStreamConstraints = {
 
-        video: selectedDeviceId
+        video: activeDeviceId
 
-          ? { deviceId: { exact: selectedDeviceId } }
+          ? { deviceId: { exact: activeDeviceId } }
 
           : true,
 
@@ -547,7 +548,8 @@ export function CaptureVisionBar({
     (nextDeviceId: string) => {
       setSelectedDeviceId(nextDeviceId);
       if (disabled || sending) return;
-      void startDeviceCapture();
+      // Use the newly selected id immediately (state update is async).
+      void startDeviceCapture(nextDeviceId);
     },
     [disabled, sending, startDeviceCapture],
   );

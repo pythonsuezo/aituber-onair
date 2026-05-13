@@ -431,7 +431,7 @@ function getDefaultSettings(): AppSettings {
       provider: 'openai',
       model: 'gpt-4.1-nano',
       endpoint: DEFAULT_OPENAI_COMPATIBLE_ENDPOINT,
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      systemPrompt: '',
       systemPromptPresets: [],
       apiKeys: {
         openai: '',
