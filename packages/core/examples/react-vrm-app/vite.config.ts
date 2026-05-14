@@ -14,6 +14,8 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    // Allow opening dev server from phone via http://<PC-LAN-IP>:5173 (Host header check).
+    allowedHosts: true,
   },
   resolve: {
     alias: [

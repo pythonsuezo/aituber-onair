@@ -49,6 +49,27 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+/**
+ * スマホで `http://<PCのLAN-IP>:5173` を開いたとき、VOICEPEAK の URL が `localhost` のままだと
+ * スマホ自身の localhost を指してしまう。設定が空なら「今のページと同じホストの 20202」を使う。
+ */
+function resolveVoicepeakApiUrl(
+  configured: string | undefined,
+): string | undefined {
+  const trimmed = configured?.trim();
+  if (trimmed) return trimmed;
+  if (typeof window === 'undefined') return undefined;
+  const { protocol, hostname } = window.location;
+  if (
+    hostname !== 'localhost' &&
+    hostname !== '127.0.0.1' &&
+    hostname !== '[::1]'
+  ) {
+    return `${protocol}//${hostname}:20202`;
+  }
+  return undefined;
+}
+
 function extractEmotionFromSpeechStart(data: unknown): string | undefined {
   if (!data || typeof data !== 'object') {
     return undefined;
@@ -169,7 +190,7 @@ function buildVoiceOptions(
     geminiTtsLanguageCode: tts.geminiTtsLanguageCode?.trim() || undefined,
     geminiTtsPrompt: tts.geminiTtsPrompt?.trim() || undefined,
     voicevoxApiUrl: tts.voicevoxApiUrl,
-    voicepeakApiUrl: tts.voicepeakApiUrl,
+    voicepeakApiUrl: resolveVoicepeakApiUrl(tts.voicepeakApiUrl),
     aivisSpeechApiUrl: tts.aivisSpeechApiUrl,
     groupId: tts.minimaxGroupId,
     endpoint: tts.engine === 'minimax' ? 'global' : undefined,
