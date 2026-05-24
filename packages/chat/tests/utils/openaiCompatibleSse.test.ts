@@ -151,6 +151,52 @@ describe('openaiCompatibleSse', () => {
     ]);
   });
 
+  it('should parse streaming text from root message (Ollama-style)', async () => {
+    const onPartial = vi.fn();
+    const payload = JSON.stringify({
+      message: { role: 'assistant', content: 'ルートに載る形式' },
+      done: true,
+    });
+    const res = createResponse([`data: ${payload}\n\n`, 'data: [DONE]\n\n']);
+
+    const full = await parseOpenAICompatibleTextStream(res, onPartial);
+
+    expect(full).toBe('ルートに載る形式');
+    expect(onPartial).toHaveBeenCalledWith('ルートに載る形式');
+  });
+
+  it('should parse streaming text from delta.content array (OpenAI multimodal shape)', async () => {
+    const onPartial = vi.fn();
+    const payload = JSON.stringify({
+      choices: [
+        {
+          delta: {
+            content: [{ type: 'text', text: '[happy]やあ' }],
+          },
+        },
+      ],
+    });
+    const res = createResponse([`data: ${payload}\n\n`, 'data: [DONE]\n\n']);
+
+    const full = await parseOpenAICompatibleTextStream(res, onPartial);
+
+    expect(full).toBe('[happy]やあ');
+    expect(onPartial).toHaveBeenCalledWith('[happy]やあ');
+  });
+
+  it('should parse streaming text from choice.message.content (llama.cpp style)', async () => {
+    const onPartial = vi.fn();
+    const res = createResponse([
+      'data: {"choices":[{"message":{"content":"[neutral]こんにちは"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+
+    const full = await parseOpenAICompatibleTextStream(res, onPartial);
+
+    expect(full).toBe('[neutral]こんにちは');
+    expect(onPartial).toHaveBeenCalledWith('[neutral]こんにちは');
+  });
+
   it('should preserve truncation metadata for one-shot responses', () => {
     const result = parseOpenAICompatibleOneShot({
       choices: [

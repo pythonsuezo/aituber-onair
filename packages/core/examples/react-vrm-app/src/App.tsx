@@ -11,6 +11,7 @@ import { useStageLipsyncRelay } from './hooks/useStageLipsyncRelay';
 import { useVisionChannelReceiver, useVisionChannelSender } from './hooks/useVisionChannel';
 import { useTwitchComments } from './hooks/useTwitchComments';
 import { useYoutubeComments } from './hooks/useYoutubeComments';
+import { useInvertedPortraitDisplay } from './hooks/useInvertedPortraitDisplay';
 import { getAppWindowMode, type VisionChannelMessage } from './windowMode';
 import {
   clampCaptureMaxHeight,
@@ -20,11 +21,20 @@ import {
   clampVisionIntervalSec,
   loadVisionSettings,
   saveVisionSettings,
+  VISION_SETTINGS_CHANGED_EVENT,
   type VisionSettingsV1,
 } from './visionSettings';
+import { ensureVisionCaptureWindow } from './utils/visionWindow';
 import { takeVisionFrame } from './utils/visionFrameBridge';
 import type { TwitchChatMessage } from './services/twitch/twitchService';
 import type { YouTubeChatMessage } from './services/youtube/youtubeService';
+import {
+  estimateTextTokens,
+  GEMMA_4_DEFAULT_PROMPT_TOKEN_BUDGET,
+  isGemma4ModelId,
+  trimJikkyoStringQueueForTokenBudget,
+} from '@aituber-onair/chat';
+import { DEFAULT_AITUBER_SYSTEM_PROMPT } from './constants/defaultAituberSystemPrompt';
 import './styles/app.css';
 
 const windowMode = getAppWindowMode();
@@ -59,7 +69,7 @@ export default function App() {
 }
 
 function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
-  const { play, stop, mouthLevel, isSpeaking } = useAudioLipsync();
+  const { play, mouthLevel, isSpeaking } = useAudioLipsync();
   const settingsHook = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [streamErrorMessage, setStreamErrorMessage] = useState('');
@@ -130,6 +140,21 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
     setInlineVisionSettings(loadVisionSettings());
   }, [inlineVisionOpen, settingsOpen]);
 
+  useEffect(() => {
+    if (isMobileUi) return;
+    const syncVisionWindow = () => {
+      const v = loadVisionSettings();
+      if (v.enabled || v.sendWithUserMessage) {
+        ensureVisionCaptureWindow();
+      }
+    };
+    syncVisionWindow();
+    window.addEventListener(VISION_SETTINGS_CHANGED_EVENT, syncVisionWindow);
+    return () => {
+      window.removeEventListener(VISION_SETTINGS_CHANGED_EVENT, syncVisionWindow);
+    };
+  }, [isMobileUi]);
+
   jikkyoSendToAiRef.current = settingsHook.settings.stream.jikkyoSendToAi;
   jikkyoAiHeaderEnabledRef.current =
     settingsHook.settings.stream.jikkyoAiHeaderEnabled;
@@ -180,17 +205,44 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
     }
   }, []);
 
+  const trimJikkyoQueueForGemmaContext = useCallback(() => {
+    const modelId = settingsHook.settings.llm.model;
+    if (!isGemma4ModelId(modelId)) {
+      return;
+    }
+    const systemPrompt =
+      settingsHook.settings.llm.systemPrompt?.trim() ||
+      DEFAULT_AITUBER_SYSTEM_PROMPT;
+    const reserved = estimateTextTokens(systemPrompt) + 600;
+    const { queue, removedCount } = trimJikkyoStringQueueForTokenBudget(
+      jikkyoQueueRef.current,
+      reserved,
+      GEMMA_4_DEFAULT_PROMPT_TOKEN_BUDGET,
+    );
+    if (removedCount > 0) {
+      jikkyoQueueRef.current = queue;
+      console.info(
+        `[jikkyo] Gemma 4 queue trim: dropped ${removedCount} oldest comment(s)`,
+      );
+    }
+  }, [
+    settingsHook.settings.llm.model,
+    settingsHook.settings.llm.systemPrompt,
+  ]);
+
   const dispatchNextJikkyoIfIdle = useCallback(() => {
     if (isProcessingRef.current) {
       return;
     }
+    trimJikkyoQueueForGemmaContext();
     const next = jikkyoQueueRef.current.shift();
     if (!next) {
       return;
     }
-    stop();
+    // Do not stop TTS: PROCESSING_END clears before playback finishes, so stop()
+    // here would cut the assistant mid-speech (same rationale as handleSend).
     processChat(next);
-  }, [processChat, stop]);
+  }, [processChat, trimJikkyoQueueForGemmaContext]);
 
   useVisionChannelReceiver(async (msg: VisionChannelMessage) => {
     if (msg?.type === 'requestFrame') {
@@ -216,7 +268,7 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       return;
     }
     pendingVisionFallbackTextRef.current = '';
-    stop();
+    // Do not stop TTS while the prior reply is still being read aloud.
     await sendVisionFrame(frame.imageDataUrl, frame.prompt);
   });
 
@@ -239,6 +291,8 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       mq.removeEventListener?.('change', apply);
     };
   }, []);
+
+  useInvertedPortraitDisplay(isMobileUi);
 
   const clampScale = (v: number) => Math.min(2.2, Math.max(0.65, v));
   const touchDistance = (
@@ -332,13 +386,23 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       const headerEnabled = jikkyoAiHeaderEnabledRef.current;
       const header = (jikkyoAiHeaderTextRef.current || '').trim();
       const finalText =
-        headerEnabled && header
-          ? `${header}${cleaned}`
-          : cleaned;
+        headerEnabled && header ? `${header}${cleaned}` : cleaned;
       jikkyoQueueRef.current.push(finalText);
       // Prevent unbounded growth when bursts happen.
       if (jikkyoQueueRef.current.length > 200) {
         jikkyoQueueRef.current.splice(0, jikkyoQueueRef.current.length - 200);
+      }
+      if (isGemma4ModelId(settingsHook.settings.llm.model)) {
+        const systemPrompt =
+          settingsHook.settings.llm.systemPrompt?.trim() ||
+          DEFAULT_AITUBER_SYSTEM_PROMPT;
+        const reserved = estimateTextTokens(systemPrompt) + 600;
+        const trimmed = trimJikkyoStringQueueForTokenBudget(
+          jikkyoQueueRef.current,
+          reserved,
+          GEMMA_4_DEFAULT_PROMPT_TOKEN_BUDGET,
+        );
+        jikkyoQueueRef.current = trimmed.queue;
       }
       dispatchNextJikkyoIfIdle();
     });
@@ -370,10 +434,9 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       inlineVisionPromptRef.current = '';
       const prompt = (oneShot || promptFromUI || '').trim();
       lastInlineVisionSentAtRef.current = Date.now();
-      stop();
       await sendVisionFrame(imageDataUrl, prompt);
     },
-    [sendVisionFrame, stop],
+    [sendVisionFrame],
   );
 
   useEffect(() => {
@@ -411,6 +474,9 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
       // blocking isProcessing, so the user can send while audio is still playing.
       const v = loadVisionSettings();
       if (v.sendWithUserMessage) {
+        if (!isMobileUi) {
+          ensureVisionCaptureWindow();
+        }
         // テキスト専用の processChat は呼ばず、画像＋発言を1回の processVisionChat にまとめる
         setPendingVisionPairWithUserText(trimmed);
         pendingVisionFallbackTextRef.current = trimmed;
@@ -432,7 +498,7 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
           pendingVisionFallbackTextRef.current = '';
           cancelPendingVisionUserText();
           processChat(fallbackText);
-        }, 1200);
+        }, 2500);
         visionSend({
           type: 'requestFrame',
           prompt: v.prompt || '',
@@ -456,18 +522,16 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
 
   const handleYoutubeComment = useCallback(
     (comment: YouTubeChatMessage) => {
-      stop();
       processChat(`「${comment.userName}」さんのコメント: ${comment.userComment}`);
     },
-    [processChat, stop]
+    [processChat],
   );
 
   const handleTwitchComment = useCallback(
     (comment: TwitchChatMessage) => {
-      stop();
       processChat(`「${comment.userName}」さんのコメント: ${comment.userComment}`);
     },
-    [processChat, stop]
+    [processChat],
   );
 
   const handleBackgroundImageChange = useCallback((file: File | null) => {
@@ -584,7 +648,11 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
         vrmExpressionBlend={settingsHook.settings.visual.vrmExpressionBlend}
         vrmEmotionTunes={settingsHook.settings.visual.vrmEmotionTunes}
         vrmLegacyExpression={settingsHook.settings.visual.vrmLegacyExpression}
+        vrmOrbit={settingsHook.settings.visual.vrmOrbit}
         assistantEmotion={assistantEmotion}
+        stt={settingsHook.settings.stt}
+        getApiKeyForProvider={settingsHook.getApiKeyForProvider}
+        updateSttField={settingsHook.updateSttField}
       />
       {isMobileUi && inlineVisionOpen && (
         <div
@@ -602,6 +670,10 @@ function MainApp({ windowMode }: { windowMode: 'combined' | 'chat' }) {
           <CaptureVisionBar
             variant="minimal"
             disabled={false}
+            keepCaptureActive={
+              inlineVisionSettings.enabled ||
+              inlineVisionSettings.sendWithUserMessage
+            }
             onSendVision={handleInlineVisionSend}
             onAutoTick={(fn) => {
               inlineVisionTickRef.current = fn;

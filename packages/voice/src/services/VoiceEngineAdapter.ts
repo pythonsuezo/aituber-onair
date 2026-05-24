@@ -44,6 +44,9 @@ export class VoiceEngineAdapter implements VoiceService {
   private activeRequest?: SpeechRequest;
   private requestIdCounter = 0;
   private cachedPiperPlusEngine?: VoiceEngine;
+  /** 再生中に次の speak の合成だけ先に走らせる（並列 API 連打はしない） */
+  private prefetchPromise?: Promise<ArrayBuffer>;
+  private prefetchRequestId?: number;
 
   /**
    * Constructor
@@ -116,6 +119,22 @@ export class VoiceEngineAdapter implements VoiceService {
     };
   }
 
+  private clearPrefetch(): void {
+    this.prefetchPromise = undefined;
+    this.prefetchRequestId = undefined;
+  }
+
+  private startPrefetchForNext(): void {
+    const next = this.requestQueue[1];
+    if (!next || next.cancelled) {
+      this.clearPrefetch();
+      return;
+    }
+
+    this.prefetchRequestId = next.id;
+    this.prefetchPromise = this.fetchAudioForScreenplay(next.screenplay);
+  }
+
   private async processQueue(): Promise<void> {
     if (this.isProcessingQueue) {
       return;
@@ -127,13 +146,29 @@ export class VoiceEngineAdapter implements VoiceService {
       while (this.requestQueue.length > 0) {
         const request = this.requestQueue[0];
 
+        if (request.cancelled) {
+          this.requestQueue.shift();
+          this.clearPrefetch();
+          continue;
+        }
+
         let audioBuffer: ArrayBuffer;
+        const usePrefetch =
+          this.prefetchPromise !== undefined &&
+          this.prefetchRequestId === request.id;
+
         try {
-          // Defer synthesis until this request is at the front of the queue so
-          // burst speak() calls (e.g. chunked assistant lines) do not hammer TTS APIs in parallel.
-          audioBuffer = await this.fetchAudioForScreenplay(request.screenplay);
+          if (usePrefetch) {
+            audioBuffer = await this.prefetchPromise!;
+            this.clearPrefetch();
+          } else {
+            this.clearPrefetch();
+            // 先頭リクエストのみここで合成開始（連続 speak でも API を同時に叩かない）
+            audioBuffer = await this.fetchAudioForScreenplay(request.screenplay);
+          }
         } catch (error) {
           console.error('Error fetching audio for speech:', error);
+          this.clearPrefetch();
           request.reject(error);
           this.requestQueue.shift();
           continue;
@@ -141,8 +176,12 @@ export class VoiceEngineAdapter implements VoiceService {
 
         if (request.cancelled) {
           this.requestQueue.shift();
+          this.clearPrefetch();
           continue;
         }
+
+        // いま再生している間に、キュー上の次のチャンクの WAV を先に作る
+        this.startPrefetchForNext();
 
         try {
           this.activeRequest = request;
@@ -158,6 +197,7 @@ export class VoiceEngineAdapter implements VoiceService {
       }
     } finally {
       this.isProcessingQueue = false;
+      this.clearPrefetch();
     }
   }
 
@@ -276,6 +316,7 @@ export class VoiceEngineAdapter implements VoiceService {
     }
 
     this.requestQueue = [];
+    this.clearPrefetch();
   }
 
   /**

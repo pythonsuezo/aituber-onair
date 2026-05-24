@@ -6,7 +6,11 @@ import {
   VoicepeakEmotionInput,
   VoicepeakEmotionWeights,
 } from '../types/voice';
+import { sanitizeVoicePeakSpeakText } from '../utils/voicepeakSpeakText';
 import { VoiceEngine } from './VoiceEngine';
+
+/** vpeakserver / CLI 落ちたあと応答が返らず UI が固まったように見えるのを防ぐ */
+const VOICEPEAK_FETCH_TIMEOUT_MS = 90_000;
 
 const VOICEPEAK_EMOTION_KEYS: readonly EmotionTypeForVoicepeak[] = [
   'happy',
@@ -42,15 +46,23 @@ export class VoicePeakEngine implements VoiceEngine {
     const resolvedSpeed = this.speedOverride;
     const resolvedPitch = this.pitchOverride;
 
+    const speakText = sanitizeVoicePeakSpeakText(talk.message);
+    if (!speakText) {
+      throw new Error('VoicePeak TTS: speak text is empty after sanitization.');
+    }
+
     const ttsQueryUrl = this.buildUrl('/audio_query', {
       speaker,
-      text: talk.message,
+      text: speakText,
       emotion: resolvedEmotion,
       speed: resolvedSpeed === undefined ? undefined : String(resolvedSpeed),
       pitch: resolvedPitch === undefined ? undefined : String(resolvedPitch),
     });
 
-    const ttsQueryResponse = await fetch(ttsQueryUrl, { method: 'POST' });
+    const ttsQueryResponse = await fetch(ttsQueryUrl, {
+      method: 'POST',
+      signal: AbortSignal.timeout(VOICEPEAK_FETCH_TIMEOUT_MS),
+    });
 
     if (!ttsQueryResponse.ok) {
       const detail = await VoicePeakEngine.readFetchErrorDetail(ttsQueryResponse);
@@ -81,7 +93,7 @@ export class VoicePeakEngine implements VoiceEngine {
     if (resolvedPitch !== undefined) {
       ttsQueryJson.pitch = resolvedPitch;
     }
-    ttsQueryJson.text = talk.message;
+    ttsQueryJson.text = speakText;
     ttsQueryJson.speaker = speaker;
 
     const synthesisUrl = this.buildUrl('/synthesis', { speaker });
@@ -99,6 +111,7 @@ export class VoicePeakEngine implements VoiceEngine {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: synthesisBody,
+      signal: AbortSignal.timeout(VOICEPEAK_FETCH_TIMEOUT_MS),
     });
 
     if (!synthesisResponse.ok) {
@@ -162,17 +175,25 @@ export class VoicePeakEngine implements VoiceEngine {
   private resolveStyleToVoicepeakEmotion(
     speaker: string,
     talk: Talk,
-  ): EmotionTypeForVoicepeak | string {
+  ): EmotionTypeForVoicepeak | string | undefined {
     const style = (talk.style ?? 'talk') as TalkStyle;
     const styleKey: TalkStyle = style === 'talk' ? 'neutral' : style;
     const rawTag = talk.screenplayEmotion?.trim().toLowerCase();
 
-    const tagMap = this.lookupNarratorEntry(this.narratorTagEmotionMap, speaker);
-    if (rawTag && tagMap?.[rawTag]) {
-      const trimmed = tagMap[rawTag].trim();
-      if (trimmed !== '') {
-        return trimmed;
+    if (rawTag) {
+      const tagMap = this.lookupNarratorEntry(
+        this.narratorTagEmotionMap,
+        speaker,
+      );
+      const mapped = tagMap?.[rawTag];
+      if (mapped !== undefined) {
+        const trimmed = mapped.trim();
+        if (trimmed !== '') {
+          return trimmed;
+        }
       }
+      // 設定でそのタグが空欄／未設定のときは emotion を付けない
+      return undefined;
     }
 
     const perSpeaker = this.lookupNarratorEntry(
@@ -339,13 +360,48 @@ export class VoicePeakEngine implements VoiceEngine {
     return serialized.length > 0 ? serialized : undefined;
   }
 
+  /**
+   * vpeakserver は emotion を `name=value` のカンマ区切りで受け取る。
+   * 組み込み既定の `teto-low-key` や `happy` など `=` のないセグメントは `=100` を付与する。
+   */
+  private canonicalizeVoicepeakEmotionString(
+    emotion: string,
+  ): string | undefined {
+    const trimmed = emotion.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (trimmed.toLowerCase() === 'neutral') {
+      return undefined;
+    }
+
+    const segments = trimmed
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    const canonical = segments.map((segment) => {
+      if (segment.includes('=')) {
+        return segment;
+      }
+      return `${segment}=100`;
+    });
+
+    return canonical.length > 0 ? canonical.join(',') : undefined;
+  }
+
   private normalizeEmotionParam(
     emotion: EmotionTypeForVoicepeak | string | undefined,
   ): string | undefined {
     if (emotion === undefined || emotion === '') {
       return undefined;
     }
-    return emotion === 'neutral' ? undefined : emotion;
+    if (typeof emotion === 'string') {
+      return this.canonicalizeVoicepeakEmotionString(emotion);
+    }
+    return emotion === 'neutral'
+      ? undefined
+      : this.canonicalizeVoicepeakEmotionString(emotion);
   }
 
   private static async readFetchErrorDetail(res: Response): Promise<string> {

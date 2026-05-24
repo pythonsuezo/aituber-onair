@@ -1107,7 +1107,7 @@ describe('VoiceEngineAdapter', () => {
   });
 
   describe('Queued synthesis', () => {
-    it('does not start fetchAudio for a queued speak until the previous request finishes synthesis', async () => {
+    it('does not start fetchAudio for a queued speak until the previous request is at the front of the queue', async () => {
       const options: VoiceServiceOptions = {
         engineType: 'minimax',
         speaker: 'test-speaker',
@@ -1142,6 +1142,38 @@ describe('VoiceEngineAdapter', () => {
       expect(mockEngine.fetchAudio).toHaveBeenCalledTimes(2);
 
       await p2;
+    });
+
+    it('prefetches the next chunk while the current chunk is playing', async () => {
+      const options: VoiceServiceOptions = {
+        engineType: 'minimax',
+        speaker: 'test-speaker',
+        apiKey: 'test-api-key',
+        groupId: 'test-group-id',
+        onPlay: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }),
+      };
+
+      mockEngine.fetchAudio
+        .mockResolvedValueOnce(new ArrayBuffer(8))
+        .mockResolvedValueOnce(new ArrayBuffer(16));
+
+      mockGetEngine.mockReturnValue(mockEngine);
+
+      const adapter = new VoiceEngineAdapter(options);
+
+      const p1 = adapter.speak({ text: 'first' });
+      const p2 = adapter.speak({ text: 'second' });
+
+      await Promise.resolve();
+      expect(mockEngine.fetchAudio).toHaveBeenCalledTimes(1);
+
+      await vi.waitFor(() => {
+        expect(mockEngine.fetchAudio).toHaveBeenCalledTimes(2);
+      });
+
+      await Promise.all([p1, p2]);
     });
   });
 

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AITuberOnAirCore,
   AITuberOnAirCoreEvent,
+  createMemoryStorage,
   textToScreenplay,
+} from '@aituber-onair/core';
+import type {
+  MemoryOptions,
+  MemorySummarizerOverride,
 } from '@aituber-onair/core';
 import type {
   VoiceServiceOptions,
@@ -18,11 +23,89 @@ import {
   DEFAULT_AITUBER_SYSTEM_PROMPT,
   LEGACY_VRM_SYSTEM_PROMPT_MARKER,
 } from '../constants/defaultAituberSystemPrompt';
-import {
-  VOICEPEAK_EMOTION_BY_NARRATOR,
-  VOICEPEAK_NARRATOR_TAG_REFERENCE,
-  mergeVoicepeakEmotionTagMaps,
-} from '../constants/voicepeakNarratorEmotions';
+import { buildVoicepeakEmotionTagMapForPlayback } from '../constants/voicepeakNarratorEmotions';
+
+const VRM_MEMORY_LOCALSTORAGE_KEY = 'aituber-onair-vrm-memory-v1';
+/** 要約レコードの保持期間（古いものは MemoryManager が削除） */
+const VRM_MEMORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isSummarizationBackedMemorySupported(
+  provider: ChatProviderOption,
+  endpoint?: string,
+): boolean {
+  if (provider === 'openai' || provider === 'gemini' || provider === 'claude') {
+    return true;
+  }
+  return provider === 'openai-compatible' && Boolean(endpoint?.trim());
+}
+
+function buildMemorySummarizerOverride(
+  settings: AppSettings,
+  getApiKeyForProvider: (provider: ChatProviderOption) => string,
+): MemorySummarizerOverride | undefined {
+  const p = settings.llm.memorySummarizerProvider ?? 'chat';
+  if (p === 'chat') return undefined;
+
+  const modelPart = settings.llm.memorySummarizerModel?.trim();
+  const model = modelPart ? modelPart : undefined;
+
+  if (p === 'openai-compatible') {
+    const endpoint = settings.llm.endpoint?.trim();
+    if (!endpoint) return undefined;
+    const chatModel = settings.llm.model?.trim() || 'local-model';
+    return {
+      provider: 'openai-compatible',
+      apiKey: getApiKeyForProvider('openai-compatible').trim(),
+      endpoint,
+      model: model ?? chatModel,
+    };
+  }
+
+  const key =
+    p === 'gemini'
+      ? getApiKeyForProvider('gemini').trim()
+      : p === 'openai'
+        ? getApiKeyForProvider('openai').trim()
+        : getApiKeyForProvider('claude').trim();
+
+  if (!key) return undefined;
+
+  if (p === 'gemini') {
+    return { provider: 'gemini', apiKey: key, model };
+  }
+  if (p === 'openai') {
+    return { provider: 'openai', apiKey: key, model };
+  }
+  return { provider: 'claude', apiKey: key, model };
+}
+
+function memoryFeatureCanActivate(
+  settings: AppSettings,
+  getApiKeyForProvider: (provider: ChatProviderOption) => string,
+  mainLlmApiKey: string,
+): { ok: boolean; summarizer?: MemorySummarizerOverride } {
+  if (!settings.llm.memorySummarizationEnabled) {
+    return { ok: false };
+  }
+  const summarizer = buildMemorySummarizerOverride(
+    settings,
+    getApiKeyForProvider,
+  );
+  if (summarizer) {
+    return { ok: true, summarizer };
+  }
+  if (
+    isSummarizationBackedMemorySupported(
+      settings.llm.provider,
+      settings.llm.endpoint,
+    ) &&
+    (settings.llm.provider === 'openai-compatible' ||
+      mainLlmApiKey.trim().length > 0)
+  ) {
+    return { ok: true };
+  }
+  return { ok: false };
+}
 
 interface UseAituberCoreOptions {
   onAudioPlay: (arrayBuffer: ArrayBuffer) => Promise<void>;
@@ -88,6 +171,26 @@ function extractEmotionFromSpeechStart(data: unknown): string | undefined {
     return direct.trim().toLowerCase();
   }
   return undefined;
+}
+
+function resolveAssistantBubbleContent(data: unknown): string {
+  if (typeof data === 'string') {
+    return data.trim();
+  }
+  const d = data as {
+    message?: { content?: string } | string;
+    rawText?: string;
+    screenplay?: { text?: string };
+  };
+  const msg = d?.message;
+  const fromMessage =
+    typeof msg === 'string' ? msg.trim() : (msg?.content ?? '').trim();
+  const fromRaw = (d?.rawText ?? '').trim();
+  const fromScreenplay = (d?.screenplay?.text ?? '').trim();
+  if (fromMessage) return fromMessage;
+  if (fromRaw) return fromRaw;
+  if (fromScreenplay) return fromScreenplay;
+  return '';
 }
 
 function extractEmotionFromScreenplayPayload(data: unknown): string | undefined {
@@ -262,9 +365,7 @@ function buildVoiceOptions(
       : parsedPiperPlusNoiseScale,
     ...(tts.engine === 'voicepeak'
       ? {
-          voicepeakEmotionByNarrator: VOICEPEAK_EMOTION_BY_NARRATOR,
-          voicepeakEmotionTagMapByNarrator: mergeVoicepeakEmotionTagMaps(
-            VOICEPEAK_NARRATOR_TAG_REFERENCE,
+          voicepeakEmotionTagMapByNarrator: buildVoicepeakEmotionTagMapForPlayback(
             tts.voicepeakEmotionTagMapByNarrator,
           ),
         }
@@ -290,6 +391,8 @@ export function useAituberCore({
   const pendingVisionUserTextRef = useRef<string | null>(null);
   /** 連続のビジョン送信を直列化（二重 postMessage 等の競合防止） */
   const visionSendChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** ローカル VLM が前回の推論完了前に次リクエストを受けると Channel Error になりやすい */
+  const lastVisionApiFinishedAtRef = useRef(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [partialResponse, setPartialResponse] = useState('');
@@ -300,6 +403,9 @@ export function useAituberCore({
   // Keep the latest onAudioPlay callback in a ref
   const onAudioPlayRef = useRef(onAudioPlay);
   onAudioPlayRef.current = onAudioPlay;
+
+  const getApiKeyForProviderRef = useRef(getApiKeyForProvider);
+  getApiKeyForProviderRef.current = getApiKeyForProvider;
 
   const llmApiKey = getApiKeyForProvider(settings.llm.provider);
   const ttsApiKey = getTtsApiKey(settings, getApiKeyForProvider);
@@ -312,6 +418,9 @@ export function useAituberCore({
     settings.llm.provider === 'openai-compatible'
       ? settings.llm.model.trim() || 'local-model'
       : settings.llm.model;
+  const isLocalVisionHeavyModel =
+    isOpenAICompatibleProvider || /^gemma-4-/i.test(resolvedModel);
+  const minVisionApiGapMs = isLocalVisionHeavyModel ? 5000 : 0;
   const userSystemPromptExtra = normalizeUserSystemPromptExtra(
     settings.llm.systemPrompt ?? '',
   );
@@ -341,25 +450,83 @@ export function useAituberCore({
       return;
     }
 
-    const core = new AITuberOnAirCore({
-      apiKey: llmApiKey.trim(),
-      chatProvider: settings.llm.provider,
-      model: resolvedModel,
-      providerOptions: isOpenAICompatibleProvider
-        ? { endpoint: openAICompatibleEndpoint }
-        : undefined,
-      chatOptions: {
-        systemPrompt: effectiveSystemPrompt,
-      },
-      voiceOptions: buildVoiceOptions(
-        settings.tts,
-        ttsApiKey,
-        async (audioBuffer: ArrayBuffer) => {
-          await onAudioPlayRef.current(audioBuffer);
+    const mem = memoryFeatureCanActivate(
+      settings,
+      (provider) => getApiKeyForProviderRef.current(provider),
+      llmApiKey,
+    );
+
+    const memoryPayload: {
+      memoryOptions: MemoryOptions;
+      memoryStorage: ReturnType<typeof createMemoryStorage>;
+      memorySummarizer?: MemorySummarizerOverride;
+    } | null = mem.ok
+      ? {
+          memoryOptions: {
+            enableSummarization: true,
+            shortTermDuration: 60 * 1000,
+            midTermDuration: 4 * 60 * 1000,
+            longTermDuration: 9 * 60 * 1000,
+            maxMessagesBeforeSummarization: 25,
+            maxMessagesInSummaryInput: 36,
+            memoryRefreshMinIntervalMs: 10 * 60 * 1000,
+            maxSummaryLength: 400,
+            memoryRetentionPeriod: VRM_MEMORY_RETENTION_MS,
+          },
+          memoryStorage: createMemoryStorage(
+            VRM_MEMORY_LOCALSTORAGE_KEY,
+            'localStorage',
+          ),
+          ...(mem.summarizer ? { memorySummarizer: mem.summarizer } : {}),
+        }
+      : null;
+
+    let core: AITuberOnAirCore;
+    try {
+      core = new AITuberOnAirCore({
+        apiKey: llmApiKey.trim(),
+        chatProvider: settings.llm.provider,
+        model: resolvedModel,
+        providerOptions: isOpenAICompatibleProvider
+          ? { endpoint: openAICompatibleEndpoint }
+          : undefined,
+        chatOptions: {
+          systemPrompt: effectiveSystemPrompt,
+          chatModelId: resolvedModel,
+          jikkyoAiHeaderPrefix: settings.stream.jikkyoAiHeaderEnabled
+            ? (settings.stream.jikkyoAiHeaderText || '掲示板：').trim()
+            : '',
+          /** llama-server が 4096 のとき、返答用にプロンプトを抑える */
+          gemma4InputTokenBudget: 2600,
+          visionHistoryImageKeepCount: isLocalVisionHeavyModel ? 1 : undefined,
         },
-      ),
-      debug: false,
-    } as ConstructorParameters<typeof AITuberOnAirCore>[0]);
+        ...(memoryPayload ?? {}),
+        voiceOptions: buildVoiceOptions(
+          settings.tts,
+          ttsApiKey,
+          async (audioBuffer: ArrayBuffer) => {
+            await onAudioPlayRef.current(audioBuffer);
+          },
+        ),
+        speechChunking:
+          settings.tts.engine === 'voicepeak'
+            ? {
+                enabled: true,
+                locale: 'ja',
+                /** 「、」では切らず、140文字に近づくまで文を結合 */
+                separators: ['。', '！', '？', '\n'],
+                minWords: 0,
+                /** 141未満が公式上限。vpeak CLI 安定のため 120 で結合・分割 */
+                maxCharsPerChunk: 120,
+              }
+            : undefined,
+        debug: false,
+      } as ConstructorParameters<typeof AITuberOnAirCore>[0]);
+    } catch (err) {
+      console.error('[useAituberCore] AITuberOnAirCore の初期化に失敗しました:', err);
+      coreRef.current = null;
+      return;
+    }
 
     // Subscribe to core events
     core.on(AITuberOnAirCoreEvent.PROCESSING_START, () => {
@@ -408,26 +575,22 @@ export function useAituberCore({
     });
 
     core.on(AITuberOnAirCoreEvent.ASSISTANT_RESPONSE, (data: unknown) => {
-      let content: string;
-      if (typeof data === 'string') {
-        content = data;
-      } else {
-        const d = data as {
-          message?: { content?: string } | string;
-          rawText?: string;
-        };
-        const msg = d?.message;
-        content =
-          (typeof msg === 'string' ? msg : msg?.content) ??
-          d?.rawText ??
-          String(data);
+      const content = resolveAssistantBubbleContent(data);
+      if (!content) {
+        console.warn(
+          '[useAituberCore] Assistant response was empty after stream parse. ' +
+            'Check llama-server logs (tokens generated but no delta.content?).',
+          data,
+        );
       }
       setMessages((prev) => [
         ...prev,
         {
           id: createMessageId(),
           role: 'assistant',
-          content,
+          content:
+            content ||
+            '（モデルから本文が届きませんでした。コンテキストが長いと起きやすいです）',
           timestamp: Date.now(),
         },
       ]);
@@ -475,6 +638,19 @@ export function useAituberCore({
     settings.llm.model,
     settings.llm.endpoint,
     settings.llm.systemPrompt,
+    settings.stream.jikkyoAiHeaderEnabled,
+    settings.stream.jikkyoAiHeaderText,
+    settings.llm.memorySummarizationEnabled,
+    settings.llm.memorySummarizerProvider,
+    settings.llm.memorySummarizerModel,
+    settings.llm.apiKeys.openai,
+    settings.llm.apiKeys.gemini,
+    settings.llm.apiKeys.claude,
+    settings.llm.apiKeys.openrouter,
+    settings.llm.apiKeys['openai-compatible'],
+    settings.llm.apiKeys.zai,
+    settings.llm.apiKeys.kimi,
+    settings.llm.apiKeys.xai,
     llmApiKey,
     isApiKeyOptionalProvider,
     createMessageId,
@@ -526,19 +702,21 @@ export function useAituberCore({
     async (text: string) => {
       if (!coreRef.current || !text.trim()) return;
 
+      const content = text.trim();
+
       // Append the user message to the chat log
       setMessages((prev) => [
         ...prev,
         {
           id: createMessageId(),
           role: 'user',
-          content: text.trim(),
+          content,
           timestamp: Date.now(),
         },
       ]);
 
       try {
-        await coreRef.current.processChat(text.trim());
+        await coreRef.current.processChat(content);
       } catch (err) {
         console.error('processChat error:', err);
         setIsProcessing(false);
@@ -591,6 +769,15 @@ export function useAituberCore({
           return;
         }
 
+        if (minVisionApiGapMs > 0) {
+          const waitUntil =
+            lastVisionApiFinishedAtRef.current + minVisionApiGapMs;
+          const waitMs = waitUntil - Date.now();
+          if (waitMs > 0) {
+            await delay(waitMs);
+          }
+        }
+
         try {
           const ok = await core.processVisionChat(
             imageDataUrl,
@@ -604,6 +791,10 @@ export function useAituberCore({
         } catch (err) {
           console.error('processVisionChat error:', err);
           setIsProcessing(false);
+        } finally {
+          if (minVisionApiGapMs > 0) {
+            lastVisionApiFinishedAtRef.current = Date.now();
+          }
         }
       };
 
@@ -615,7 +806,7 @@ export function useAituberCore({
         });
       await visionSendChainRef.current;
     },
-    [createMessageId],
+    [createMessageId, minVisionApiGapMs],
   );
 
   return {

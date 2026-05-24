@@ -6,6 +6,97 @@ type SseParseOptions = {
   appendTextBlock?: (blocks: ToolChatBlock[], text: string) => void;
 };
 
+/** OpenAI / llama.cpp: content が string または [{ type:'text', text }] の配列 */
+function extractContentString(content: unknown): string {
+  if (typeof content === 'string' && content.length > 0) {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  const parts: string[] = [];
+  for (const part of content) {
+    if (typeof part === 'string' && part.length > 0) {
+      parts.push(part);
+      continue;
+    }
+    if (!part || typeof part !== 'object') {
+      continue;
+    }
+    const p = part as Record<string, unknown>;
+    if (p.type === 'text' && typeof p.text === 'string' && p.text.length > 0) {
+      parts.push(p.text);
+    }
+  }
+  return parts.join('');
+}
+
+/** llama.cpp / LM Studio など delta 以外に本文が載る形式も拾う */
+function extractStreamingTextFromChoice(choice: unknown): string {
+  if (!choice || typeof choice !== 'object') {
+    return '';
+  }
+  const c = choice as Record<string, unknown>;
+  const delta = c.delta;
+  if (delta && typeof delta === 'object') {
+    const fromDelta = extractContentString(
+      (delta as { content?: unknown }).content,
+    );
+    if (fromDelta) {
+      return fromDelta;
+    }
+  }
+  const message = c.message;
+  if (message && typeof message === 'object') {
+    const fromMessage = extractContentString(
+      (message as { content?: unknown }).content,
+    );
+    if (fromMessage) {
+      return fromMessage;
+    }
+  }
+  if (typeof c.text === 'string' && c.text.length > 0) {
+    return c.text;
+  }
+  return '';
+}
+
+/** Ollama / 一部 llama-server が choices 外に載せる本文 */
+function extractStreamingTextFromRoot(json: unknown): string {
+  if (!json || typeof json !== 'object') {
+    return '';
+  }
+  const root = json as Record<string, unknown>;
+  const choices = root.choices;
+  const firstChoice =
+    Array.isArray(choices) && choices.length > 0 ? choices[0] : undefined;
+  const fromChoice = extractStreamingTextFromChoice(firstChoice);
+  if (fromChoice) {
+    return fromChoice;
+  }
+  if (root.message && typeof root.message === 'object') {
+    const fromMessage = extractContentString(
+      (root.message as { content?: unknown }).content,
+    );
+    if (fromMessage) {
+      return fromMessage;
+    }
+  }
+  if (typeof root.response === 'string' && root.response.length > 0) {
+    return root.response;
+  }
+  const delta = root.delta;
+  if (delta && typeof delta === 'object') {
+    const fromDelta = extractContentString(
+      (delta as { content?: unknown }).content,
+    );
+    if (fromDelta) {
+      return fromDelta;
+    }
+  }
+  return '';
+}
+
 const parseJsonPayload = (
   payload: string,
   onJsonError?: (payload: string, error: unknown) => void,
@@ -69,7 +160,7 @@ export async function parseOpenAICompatibleTextStream(
     const json = parseJsonPayload(payload, options.onJsonError);
     if (!json) return;
 
-    const content = json.choices?.[0]?.delta?.content || '';
+    const content = extractStreamingTextFromRoot(json);
     if (content) {
       onPartial(content);
       full += content;
@@ -103,13 +194,13 @@ export async function parseOpenAICompatibleToolStream(
       usage = json.usage;
     }
 
-    const delta = choice?.delta;
-
-    if (delta?.content) {
-      onPartial(delta.content);
-      appendTextBlock(textBlocks, delta.content);
+    const streamedText = extractStreamingTextFromRoot(json);
+    if (streamedText) {
+      onPartial(streamedText);
+      appendTextBlock(textBlocks, streamedText);
     }
 
+    const delta = choice?.delta;
     if (delta?.tool_calls) {
       delta.tool_calls.forEach((c: any) => {
         const entry = toolCallsMap.get(c.index) ?? {
@@ -156,8 +247,11 @@ export function parseOpenAICompatibleOneShot(data: any): ToolChatCompletion {
         input: JSON.parse(c.function?.arguments || '{}'),
       }),
     );
-  } else if (choice?.message?.content) {
-    blocks.push({ type: 'text', text: choice.message.content });
+  } else {
+    const text = extractContentString(choice?.message?.content);
+    if (text) {
+      blocks.push({ type: 'text', text });
+    }
   }
 
   return {
